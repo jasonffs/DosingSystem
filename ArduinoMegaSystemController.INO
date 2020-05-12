@@ -182,15 +182,23 @@ void setup(){
   
   Timer1_Init();
 }
+
+
+
+
 void loop(){
     Run_Mode(CURRENT_MODE);
 }
 
 
-// Function to run all operation mode specific logic on System peripherals
+// Function:
+// Run mode uses a switch case statement for operation mode switching 
+// before specific mode is run, latest temp values are gathered and used within the following logic
 
 void Run_Mode(OPERATION_MODE Mode){
+  
     // continuously Update values to work with the latest temps
+  
     PROD_TEMP  = Get_Temp(PROD_THERMO);
     WATER_TEMP = Get_Temp(WATER_THERMO);
     
@@ -198,7 +206,11 @@ void Run_Mode(OPERATION_MODE Mode){
       
         case PRODUCTION_MODE:
         
-        // Check either levels too low before turning on Heater Logic and pump systems
+        // Production mode:
+        // Production mode checks all level sensors and updates the light system and display accordingly
+        // If all levels are appropriate, using the latest temp readings, the heaters are enabled and relevent conditional statements control their switching
+        // Once all temperatures are appropriate and levels OK, the System Ready State is enabled and all Mixers and Pumps are activated
+        
         if(digitalRead(PROD_TOP_UP)){LIGHT_STATUS = PRODUCT_TOP_UP;}
 
         if((!digitalRead(PROD_LEVEL_LOW)) && (!digitalRead(WATER_LEVEL_LOW))){
@@ -222,13 +234,20 @@ void Run_Mode(OPERATION_MODE Mode){
         }
         break;
         
+        // PRODUCT PRIME MODE
+        // Product Prime mode activates a timed cycle of activating the filler purge
+        // See ISR()
         case PRODUCT_PRIME_MODE:
         if(FILLER_PURGE_CYCLE > 1){
             // revert back to LCD menu await inputs
         }
         break;
+        
+        //Product Flush Mode
+        // In this mode either hot or cold is selected
+        // If Cold, Heaters are disabled and water pump is disabled
+        // If hot, Heater routine follows that of production mode with Heater_Routine(true), and water pumps activated
         case PRODUCT_FLUSH_MODE:
-        // If Cold flush mode, product tank empty and delay time elapsed
         
         if(FLUSH_TEMP==COLD){
             //turn off heaters and water pumps
@@ -257,6 +276,13 @@ void Run_Mode(OPERATION_MODE Mode){
         break;
     }
 }
+
+// Heater Routine 
+// the heater routine function runs the relevent logic to bring the water and product to temperature.
+// this routine is called from Run_Mode(), and is given the safe boolean according to logic checks within Run_Mode()
+// the safe boolean is used to indicate that there are no flags such as; WATER_LOW, PRODUCT_LOW, WATER_OVER_TEMP, PROD_OVER_TEMP
+// if safe is false, all heaters are turned off
+
 void Heater_Routine(bool Safe){
     if(Safe){
         if((PROD_TEMP < TEMP_SET)&& (WATER_TEMP < WATER_OVER_TEMP)){
@@ -367,6 +393,9 @@ void Set_Mode(OPERATION_MODE MODE){
   }
 }
 
+// Setup of MAX31865
+// Making use of the fault detection to update LCD to possible hard faults
+
 bool MAX31865_Init(Adafruit_MAX31865 Thermo){
   
   // init Temp Sensor
@@ -412,6 +441,8 @@ void GPIO_Init(){
   
   
 }
+
+// inititalizing all registers needed to enable a 500ms interrupt routine for timer 1
 void Timer1_Init(){
   
     // Reset tim1 control reg A
@@ -439,6 +470,9 @@ void Timer1_Init(){
 }
 
 // Interrupt routine for timer 1. Triggered every 500ms 
+
+// Used for Toggling of System Light Status
+// Purge Cycles and Flush Cycles
 
 ISR(TIMER1_COMPA_vect){
 
