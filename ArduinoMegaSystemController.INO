@@ -213,7 +213,8 @@ void Run_Mode(OPERATION_MODE Mode){
         
         if(digitalRead(PROD_TOP_UP)){LIGHT_STATUS = PRODUCT_TOP_UP;}
 
-        if((!digitalRead(PROD_LEVEL_LOW)) && (!digitalRead(WATER_LEVEL_LOW))){
+        // Check Product Level and Water Level
+        if((!digitalRead(PROD_LEVEL_LOW)) && (!digitalRead(WATER_LEVEL_LOW))){ 
 
             Heater_Routine(true);
             
