@@ -314,7 +314,7 @@ void setup()
     //---------------------------------------------------------------------------------------------------------------------------------------------------------------
     // Jason Waugh
     // 16-05-2020
-    ParametersTemp.productOverTemp = Parameters.prodTempSetValue; // using set temp as defualt, can edit in maintenance mode
+    ParametersTemp.productOverTemp = Parameters.productOverTemp // 
 
     enable("Disp");
     Serial.println("Sucsesfully copied config data to temporary struct");
@@ -438,6 +438,7 @@ void loadConfiguration(const char *filename, parameters &Parameters)
     Parameters.lowAlarm[1] = root["waterLowAlarm"] | 4;
     Parameters.prodTempBandGap[0] = root["prodBandGap_width"] | 2;
     Parameters.prodTempBandGap[1] = root["prodBandGap_offset"] | 1;
+    Parameters.productOverTemp    = root["ProductOver_Temp_Value"] | 85;
 
     Serial.println();
     Serial.println("prodFlushPumpDelay: " + String(Parameters.prodFlushPumpDelay));
@@ -1271,6 +1272,7 @@ void saveConfiguration(const char *filename, const parameters &ParametersIn)
     root["waterLowAlarm"] = ParametersTemp.lowAlarm[1];
     root["prodBandGap_width"] = ParametersTemp.prodTempBandGap[0];
     root["prodBandGap_offset"] = ParametersTemp.prodTempBandGap[1];
+    root["ProductOver_Temp_Value"] = ParametersTemp.productOverTemp;
 
     // Serialize JSON to file
     if (root.printTo(file) == 0)
