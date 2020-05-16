@@ -39,12 +39,8 @@ Issues;
 
 int pinsOut[] =
     {
-
         10, //Ethernet CS
         4,  //SD CS
-        //7,  //Display CS
-        //6,  //Display RST
-        //5,  //Display DC
         15, //Temp sensor Product CS //fake
         16, //Temp sensor Water CS //fake
         34, //12kW Heater
@@ -52,13 +48,18 @@ int pinsOut[] =
         36, //36kW Heater
         37, //Product Mixer
         38, //Product Pump
-        39, //Water Mixer
-        40, //Water Pump
-        41, //System ready light
-        42, //Alarm light on flashing
-        44,
-        53,
+        //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+        // Jason Waugh
+        // 16-05-2020
 
+        39, // Water Pump
+        40, // RED LIGHT
+        41, // ORANGE LIGHT
+        42, // GREEN LIGHT
+        43, // SYSTEM READY SIGNAL
+        44  // FILLER PURGE SIGNAL
+
+        //---------------------------------------------------------------------------------------------------------------------------------------------------------------
 };
 
 int pinsIn[] =
@@ -68,6 +69,14 @@ int pinsIn[] =
         31, //Display right button
         32, //Display up button
         33, //Display down button
+        //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+        // Jason Waugh
+        // 16-05-2020
+
+        22, // WATER_LEVEL_LOW - if pin reads low - condition is true
+        23, // PROD_LEVEL_LOW  -
+        24  // PROD_TOP_UP     -
+            //---------------------------------------------------------------------------------------------------------------------------------------------------------------
 };
 
 struct Sensors
@@ -93,17 +102,29 @@ struct parameters
     float prodTempBandGap[2]; //Width, offset
     short waterOverTemp;
     int prodFlushPumpDelay;
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+    // Jason Waugh
+    // 16-05-2020
+
+    short productOverTemp;
+
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
 };
 
 const char *errorMessages[] =
     {
         "No_SD_card",
         "No_Internet_Connection",
-        "Product_Mixer_Current_Level_Is_Low",
-        "Water_Mixer_Current_Level_Is_Low",
+        "Product_Mixer_Level_Is_Low",
+        "Water_Mixer_Level_Is_Low",
         "Water_Over_Temp",
         "SD_logger_failed",
-};
+        //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+        // Jason Waugh
+        // 16-05-2020
+
+        "Product_Needs_Top_Up",
+        "Product_Over_Temperature"};
 
 const char *setupMenu[] =
     {
@@ -211,10 +232,19 @@ Adafruit_MAX31865 max_1 = Adafruit_MAX31865(9, 11, 12, 13); // ss, mosi, miso, s
 #define ILI9486_ORANGE 0xFD20      //< 255, 165,   0
 #define ILI9486_GREENYELLOW 0xAFE5 //< 173, 255,  41
 #define ILI9486_PINK 0xFC18        //< 255, 130, 198
+//---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Jason Waugh
+// 16-05-2020
+
+bool WATER_LEVEL_LOW = false;
+bool PROD_LEVEL_LOW = false;
+bool PROD_TOP_UP = false;
 
 bool purgeInit false;
 uint8_t purgeCycleStartTime = 0;
 uint8_t PurgeCounter = 0;
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /***************************************
   _____       _ _   _       _ _          
@@ -281,6 +311,11 @@ void setup()
     ParametersTemp.prodTempBandGap[0] = Parameters.prodTempBandGap[0];
     ParametersTemp.prodTempBandGap[1] = Parameters.prodTempBandGap[1];
     ParametersTemp.waterOverTemp = Parameters.waterOverTemp;
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+    // Jason Waugh
+    // 16-05-2020
+    ParametersTemp.productOverTemp = Parameters.prodTempSetValue; // using set temp as defualt, can edit in maintenance mode
+
     enable("Disp");
     Serial.println("Sucsesfully copied config data to temporary struct");
     tft.println("Sucsesfully copied config data to temporary struct");
@@ -508,7 +543,7 @@ void loop()
     {
         Serial.println("Error!!!!");
         Serial.print(errorMessages[errorIndex]);
-        Alarm();
+        //Alarm();
         outputControl();
         displayMenuUpdate(true);
         delay(1000);
@@ -518,6 +553,7 @@ void loop()
             readSensors();
             errorMessage = checkForErrors();
             ApplicationMonitor.IAmAlive();
+            outputControl();
 
             if (timeForLogData())
             {
@@ -616,12 +652,14 @@ void loop()
         //Flush mode
         else if (mode == 2)
         {
-            if (fillerPurgeCycle())
+            if (fillerPurgeCycle() && !purgeInit)
             {
                 purgeInit = true;
+                PurgeCounter = 0;
             }
             if (purgeInit)
             {
+
                 if (flushtype == 1) //hot flush
                 {
                     Serial.println("Enter HOT FLUSH");
@@ -633,14 +671,17 @@ void loop()
                     control.prod[1] = true;
                     control.water[0] = true;
                     control.water[1] = true;
-
-                    while (millis() - startTime < totalTime)
+                    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+                    // Jason Waugh
+                    // 16-05-2020
+                    while (!PROD_LEVEL_LOW)
                     {
                         ApplicationMonitor.IAmAlive();
                         readSensors();
                         tempController();
                         outputControl();
                         delay(200);
+                        startTime = millis();
                     }
 
                     if (millis() - startTime >= totalTime)
@@ -651,10 +692,20 @@ void loop()
                         tft.fillScreen(ILI9486_WHITE);
                         tft.setTextSize(4);
                         tft.setCursor(5, 5);
-                        tft.print("Flush done!");
+                        tft.print("HOT FLUSH COMPLETE!");
                         delay(2000);
-                        purgeInit = false;
-                        reboot();
+                        control.prod[0] = false;
+                        control.prod[1] = false;
+                        control.water[0] = false;
+                        control.water[1] = false;
+                        control.heat[0] = false;
+                        control.heat[1] = false;
+                        control.heat[2] = false;
+                        outputControl();
+                        menu = 1;
+                        mode = 1;
+                        displayMainMenu();
+                        //reboot();
                     }
                 }
                 else if (flushtype == 2) //cold flush
@@ -667,11 +718,14 @@ void loop()
                     control.prod[0] = true;
                     control.prod[1] = true;
                     outputControl();
-
-                    while (millis() - startTime < totalTime)
+                    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+                    // Jason Waugh
+                    // 16-05-2020
+                    while (!PROD_LEVEL_LOW)
                     {
                         ApplicationMonitor.IAmAlive();
                         delay(200);
+                        startTime = millis();
                     }
 
                     if (millis() - startTime >= totalTime)
@@ -681,597 +735,766 @@ void loop()
                         tft.fillScreen(ILI9486_WHITE);
                         tft.setTextSize(4);
                         tft.setCursor(5, 5);
-                        tft.print("Flush done!");
+                        tft.print("COLD FLUSH COMPLETE!");
                         delay(2000);
-                        reboot();
+                        control.prod[0] = false;
+                        control.prod[1] = false;
+                        control.water[0] = false;
+                        control.water[1] = false;
+                        control.heat[0] = false;
+                        control.heat[1] = false;
+                        control.heat[2] = false;
+                        outputControl();
+                        mode = 1;
+                        menu = 1;
+                        displayMainMenu();
+                        //reboot();
                     }
                 }
             }
-            //--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            // Jason Waugh
-            // Added logic for product prime cycle
-            // 14-05-2020
-            else if (mode == 3)
+        }
+        //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+        // Jason Waugh
+        // 16-05-2020
+        else if (mode == 3)
+        {
+            if (fillerPurgeCycle())
             {
-                if (fillerPurgeCycle())
-                {
-                    menu = 1;
-                    mode = 1;
-                    tft.fillScreen(ILI9486_WHITE);
-                    tft.setCursor(5, 5);
-                    tft.print("Product Priming Done!");
-                    delay(1000);
-                    displayMainMenu();
-                }
+                PurgeCounter = 0;
+                menu = 1;
+                mode = 1;
+                tft.fillScreen(ILI9486_WHITE);
+                tft.setCursor(5, 5);
+                tft.print("Product Priming Done!");
+                delay(2000);
+                displayMainMenu();
             }
         }
-        loopCount++;
     }
-    bool fillerPurgeCycle()
+    loopCount++;
+}
+//---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Jason Waugh
+// 16-05-2020
+bool fillerPurgeCycle()
+{
+    if (PurgeCounter == 0)
     {
-        if (PurgeCounter == 0)
-        {
-            purgeCycleStartTime = millis();
-            digitalWrite(pinsOut[13], HIGH);
-            PurgeCounter++;
-        }
-        else if (PurgeCounter == 1 && (milli() - purgeCycleStartTime >= 2000))
-        {
-            PurgeCounter++;
-            digitalWrite(pinsOut[13], lOW);
-            purgeCycleStartTime = millis();
-        }
-        else if (PurgeCounter == 3 && (millis() - purgeCycleStartTime >= 1000))
-        {
-            PurgeCounter++;
-            digitalWrite(pinsOut[13], HIGH);
-            purgeCycleStartTime = millis();
-        }
-        else if (PurgeCounter == 4 && (milli() - purgeCycleStartTime >= 2000))
-        {
-            PurgeCounter = 0;
-            digitalWrite(pinsOut[13], lOW);
-            return true;
-        }
-
-        return false;
+        purgeCycleStartTime = millis();
+        digitalWrite(pinsOut[13], HIGH);
+        PurgeCounter++;
     }
-    float operatMax31865_1(void)
+    else if (PurgeCounter == 1 && (milli() - purgeCycleStartTime >= 2000))
     {
-        float temperature_1 = max_1.temperature(RNOMINAL, RREF);
-        return temperature_1;
+        PurgeCounter++;
+        digitalWrite(pinsOut[13], lOW);
+        purgeCycleStartTime = millis();
+    }
+    else if (PurgeCounter == 3 && (millis() - purgeCycleStartTime >= 1000))
+    {
+        PurgeCounter++;
+        digitalWrite(pinsOut[13], HIGH);
+        purgeCycleStartTime = millis();
+    }
+    else if (PurgeCounter == 4 && (milli() - purgeCycleStartTime >= 2000))
+    {
+        PurgeCounter = 0;
+        digitalWrite(pinsOut[13], lOW);
+        return true;
     }
 
-    float operatMax31865_2(void)
-    {
-        float temperature_2 = max_2.temperature(RNOMINAL, RREF);
-        return temperature_2;
-    }
+    return false;
+}
+float operatMax31865_1(void)
+{
+    float temperature_1 = max_1.temperature(RNOMINAL, RREF);
+    return temperature_1;
+}
 
-    void printDataSerial()
-    {
-        Serial.println("");
-        Serial.println("PROD : Set Temp  ");
-        Serial.println(String(Parameters.prodTempSetValue));
-        Serial.println("PROD: Temp  ");
-        Serial.println(String(sensordata.temp[0]));
-        Serial.println("PROD: Mixer current Set value  ");
-        Serial.println(String(Parameters.lowAlarm[0]));
-        Serial.println("PROD: Mixer current value  ");
-        Serial.println(String(sensordata.mixer[0]));
-        Serial.println("PROD: Mixer ON or OFF  ");
-        Serial.println(String(control.prod[0]));
-        Serial.println("WATER: Temp  ");
-        Serial.println(String(sensordata.temp[1]));
-        Serial.println("WATER: Mixer current Set value  ");
-        Serial.println(String(Parameters.lowAlarm[1]));
-        Serial.println("WATER: Mixer current value  ");
-        Serial.println(String(sensordata.mixer[1]));
-        Serial.println("WATER: Mixer:  ");
-        Serial.println(String(control.prod[1]));
-        Serial.println("12kW heater:  ");
-        Serial.println(String(control.heat[0]));
-        Serial.println("24kW heater:  ");
-        Serial.println(String(control.heat[1]));
-        Serial.println("36kW heater:  ");
-        Serial.println(String(control.heat[2]));
-        Serial.println("System Ready:  ");
-        Serial.println(String(control.status[0]));
-        Serial.println("Alarm:  ");
-        Serial.println(String(control.status[1]));
-    }
+float operatMax31865_2(void)
+{
+    float temperature_2 = max_2.temperature(RNOMINAL, RREF);
+    return temperature_2;
+}
 
-    void productionStatsDisp()
-    {
-        enable("Disp");
-        tft.fillScreen(ILI9486_WHITE);
-        tft.setCursor(5, 5);
-        tft.setTextColor(ILI9486_BLACK);
-        tft.setTextSize(4);
-        tft.print("PRODUCTION MODE:");
-        tft.setTextSize(2);
-        tft.setCursor(40, 50);
-        tft.print("Product Temp set value:");
-        tft.setCursor(380, 50);
-        tft.print(String(Parameters.prodTempSetValue));
-        tft.setCursor(40, 75);
-        tft.print("Product temperature:");
-        tft.setCursor(380, 75);
-        tft.print(String(sensordata.temp[0]));
-        tft.setCursor(40, 100);
-        tft.print("Water temperature:");
-        tft.setCursor(380, 100);
-        tft.print(String(sensordata.temp[1]));
-        tft.setCursor(40, 125);
-        tft.print("Heater 12kW status:");
-        tft.setCursor(40, 150);
-        tft.print("Heater 24kW status:");
-        tft.setCursor(40, 175);
-        tft.print("Heater 36kW status:");
-        if (control.heat[0] == false)
-        {
-            tft.setCursor(380, 125);
-            tft.print("OFF");
-        }
-        else if (control.heat[0] == true)
-        {
-            tft.setCursor(380, 125);
-            tft.print("ON");
-        }
-        if (control.heat[1] == false)
-        {
-            tft.setCursor(380, 150);
-            tft.print("OFF");
-        }
-        else if (control.heat[1] == true)
-        {
-            tft.setCursor(380, 150);
-            tft.print("ON");
-        }
-        if (control.heat[2] == false)
-        {
-            tft.setCursor(380, 175);
-            tft.print("OFF");
-        }
-        else if (control.heat[2] == true)
-        {
-            tft.setCursor(380, 175);
-            tft.print("ON");
-        }
-        if (control.status[0] == false)
-        {
-            tft.setCursor(40, 200);
-            tft.setTextColor(ILI9486_RED);
-            tft.print("System ready");
-            tft.setCursor(400, 200);
-            tft.print("NO");
-        }
-        else if (control.status[0] == true)
-        {
-            tft.setCursor(40, 200);
-            tft.setTextColor(ILI9486_GREEN);
-            tft.print("System ready");
-            tft.setCursor(400, 200);
-            tft.print("YES");
-        }
-        tft.setTextColor(ILI9486_DARKCYAN);
-        tft.setCursor(40, 300);
-        tft.print("Press any button to enter menu");
-        return;
-    }
+void printDataSerial()
+{
+    Serial.println("");
+    Serial.println("PROD : Set Temp  ");
+    Serial.println(String(Parameters.prodTempSetValue));
+    Serial.println("PROD: Temp  ");
+    Serial.println(String(sensordata.temp[0]));
+    Serial.println("PROD: Mixer current Set value  ");
+    Serial.println(String(Parameters.lowAlarm[0]));
+    Serial.println("PROD: Mixer current value  ");
+    Serial.println(String(sensordata.mixer[0]));
+    Serial.println("PROD: Mixer ON or OFF  ");
+    Serial.println(String(control.prod[0]));
+    Serial.println("WATER: Temp  ");
+    Serial.println(String(sensordata.temp[1]));
+    Serial.println("WATER: Mixer current Set value  ");
+    Serial.println(String(Parameters.lowAlarm[1]));
+    Serial.println("WATER: Mixer current value  ");
+    Serial.println(String(sensordata.mixer[1]));
+    Serial.println("WATER: Mixer:  ");
+    Serial.println(String(control.prod[1]));
+    Serial.println("12kW heater:  ");
+    Serial.println(String(control.heat[0]));
+    Serial.println("24kW heater:  ");
+    Serial.println(String(control.heat[1]));
+    Serial.println("36kW heater:  ");
+    Serial.println(String(control.heat[2]));
+    Serial.println("System Ready:  ");
+    Serial.println(String(control.status[0]));
+    Serial.println("Alarm:  ");
+    Serial.println(String(control.status[1]));
+}
 
-    void outputControl()
+void productionStatsDisp()
+{
+    enable("Disp");
+    tft.fillScreen(ILI9486_WHITE);
+    tft.setCursor(5, 5);
+    tft.setTextColor(ILI9486_BLACK);
+    tft.setTextSize(4);
+    tft.print("PRODUCTION MODE:");
+    tft.setTextSize(2);
+    tft.setCursor(40, 50);
+    tft.print("Product Temp set value:");
+    tft.setCursor(380, 50);
+    tft.print(String(Parameters.prodTempSetValue));
+    tft.setCursor(40, 75);
+    tft.print("Product temperature:");
+    tft.setCursor(380, 75);
+    tft.print(String(sensordata.temp[0]));
+    tft.setCursor(40, 100);
+    tft.print("Water temperature:");
+    tft.setCursor(380, 100);
+    tft.print(String(sensordata.temp[1]));
+    tft.setCursor(40, 125);
+    tft.print("Heater 12kW status:");
+    tft.setCursor(40, 150);
+    tft.print("Heater 24kW status:");
+    tft.setCursor(40, 175);
+    tft.print("Heater 36kW status:");
+    if (control.heat[0] == false)
     {
-        ApplicationMonitor.IAmAlive();
-        if (control.heat[0] == true)
-        {
-            digitalWrite(pinsOut[4], HIGH);
-        }
-        if (control.heat[1] == true)
-        {
-            digitalWrite(pinsOut[5], HIGH);
-        }
-        if (control.heat[2] == true)
-        {
-            digitalWrite(pinsOut[6], HIGH);
-        }
-        if (control.heat[0] == false)
-        {
-            digitalWrite(pinsOut[4], LOW);
-        }
-        if (control.heat[1] == false)
-        {
-            digitalWrite(pinsOut[5], LOW);
-        }
-        if (control.heat[2] == false)
-        {
-            digitalWrite(pinsOut[6], LOW);
-        }
-        if (control.prod[0] == true)
-        {
-            digitalWrite(pinsOut[7], HIGH);
-        }
-        if (control.prod[1] == true)
-        {
-            digitalWrite(pinsOut[8], HIGH);
-        }
-        if (control.water[0] == true)
-        {
-            digitalWrite(pinsOut[9], HIGH);
-        }
-        if (control.water[1] == true)
-        {
-            digitalWrite(pinsOut[10], HIGH);
-        }
-        if (control.prod[0] == false)
-        {
-            digitalWrite(pinsOut[7], LOW);
-        }
-        if (control.prod[1] == false)
-        {
-            digitalWrite(pinsOut[8], LOW);
-        }
-        if (control.water[0] == false)
-        {
-            digitalWrite(pinsOut[9], LOW);
-        }
-        if (control.water[1] == false)
+        tft.setCursor(380, 125);
+        tft.print("OFF");
+    }
+    else if (control.heat[0] == true)
+    {
+        tft.setCursor(380, 125);
+        tft.print("ON");
+    }
+    if (control.heat[1] == false)
+    {
+        tft.setCursor(380, 150);
+        tft.print("OFF");
+    }
+    else if (control.heat[1] == true)
+    {
+        tft.setCursor(380, 150);
+        tft.print("ON");
+    }
+    if (control.heat[2] == false)
+    {
+        tft.setCursor(380, 175);
+        tft.print("OFF");
+    }
+    else if (control.heat[2] == true)
+    {
+        tft.setCursor(380, 175);
+        tft.print("ON");
+    }
+    if (control.status[0] == false)
+    {
+        tft.setCursor(40, 200);
+        tft.setTextColor(ILI9486_RED);
+        tft.print("System ready");
+        tft.setCursor(400, 200);
+        tft.print("NO");
+    }
+    else if (control.status[0] == true)
+    {
+        tft.setCursor(40, 200);
+        tft.setTextColor(ILI9486_GREEN);
+        tft.print("System ready");
+        tft.setCursor(400, 200);
+        tft.print("YES");
+    }
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+    // Jason Waugh
+    // 16-05-2020
+    if (!PROD_LEVEL_LOW && !PROD_TOP_UP)
+    {
+        tft.setCursor(40, 225);
+        tft.setTextColor(ILI9486_GREEN);
+        tft.print("Product Level");
+        tft.setCursor(400, 225);
+        tft.print("OK");
+    }
+    else if (!PROD_LEVEL_LOW && PROD_TOP_UP)
+    {
+        tft.setCursor(40, 225);
+        tft.setTextColor(ILI9486_ORANGE);
+        tft.print("Product Level");
+        tft.setCursor(400, 225);
+        tft.print("TOP_UP");
+    }
+    else if (PROD_LEVEL_LOW)
+    {
+        tft.setCursor(40, 225);
+        tft.setTextColor(ILI9486_RED);
+        tft.print("Product Level");
+        tft.setCursor(400, 225);
+        tft.print("LOW");
+    }
+    if (!WATER_LEVEL_LOW)
+    {
+        tft.setCursor(40, 250);
+        tft.setTextColor(ILI9486_GREEN);
+        tft.print("Water Level");
+        tft.setCursor(400, 250);
+        tft.print("OK");
+    }
+    else if (WATER_LEVEL_LOW)
+    {
+        tft.setCursor(40, 250);
+        tft.setTextColor(ILI9486_RED);
+        tft.print("Water Level");
+        tft.setCursor(400, 250);
+        tft.print("LOW");
+    }
+    tft.setTextColor(ILI9486_DARKCYAN);
+    tft.setCursor(40, 300);
+    tft.print("Press any button to enter menu");
+    return;
+}
+
+void outputControl()
+{
+    ApplicationMonitor.IAmAlive();
+    if (control.heat[0] == true)
+    {
+        digitalWrite(pinsOut[4], HIGH);
+    }
+    if (control.heat[1] == true)
+    {
+        digitalWrite(pinsOut[5], HIGH);
+    }
+    if (control.heat[2] == true)
+    {
+        digitalWrite(pinsOut[6], HIGH);
+    }
+    if (control.heat[0] == false)
+    {
+        digitalWrite(pinsOut[4], LOW);
+    }
+    if (control.heat[1] == false)
+    {
+        digitalWrite(pinsOut[5], LOW);
+    }
+    if (control.heat[2] == false)
+    {
+        digitalWrite(pinsOut[6], LOW);
+    }
+    if (control.prod[0] == true)
+    {
+        digitalWrite(pinsOut[7], HIGH);
+    }
+    if (control.prod[1] == true)
+    {
+        digitalWrite(pinsOut[8], HIGH);
+    }
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+    // Jason Waugh
+    // no spec for water mixer
+    if (control.water[0] == true)
+    {
+        //digitalWrite(pinsOut[9], HIGH);
+    }
+    if (control.water[1] == true)
+    {
+        digitalWrite(pinsOut[9], HIGH);
+    }
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+    if (control.prod[0] == false)
+    {
+        digitalWrite(pinsOut[7], LOW);
+    }
+    if (control.prod[1] == false)
+    {
+        digitalWrite(pinsOut[8], LOW);
+    }
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+    // Jason Waugh
+    // no spec for water mixer
+
+    if (control.water[0] == false)
+    {
+        // digitalWrite(pinsOut[9], LOW);
+    }
+    if (control.water[1] == false)
+    {
+        digitalWrite(pinsOut[9], LOW);
+    }
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+    if (control.status[0] == true)
+    {
+        digitalWrite(pinsOut[12], HIGH);
+    }
+    if (control.status[1] == true)
+    {
+        // digitalWrite(pinsOut[12], HIGH);
+    }
+    if (control.status[0] == false)
+    {
+        digitalWrite(pinsOut[12], LOW);
+    }
+    if (control.status[1] == false)
+    {
+        // digitalWrite(pinsOut[12], LOW);
+    }
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+    // Jason Waugh
+    // 16-05-2020
+
+    if (control.status[0])
+    {
+
+        if (PROD_TOP_UP)
         {
             digitalWrite(pinsOut[10], LOW);
+            digitalWrite(pinsOut[12], LOW);
+            digitalWrite(pinsOut[11], !digitalRead(pinsOut[11]));
+            // orange flash
         }
-        if (control.status[0] == true)
-        {
-            digitalWrite(pinsOut[11], HIGH);
-        }
-        if (control.status[1] == true)
-        {
-            digitalWrite(pinsOut[12], HIGH);
-        }
-        if (control.status[0] == false)
+        else if (PROD_LEVEL_LOW)
         {
             digitalWrite(pinsOut[11], LOW);
+            digitalWrite(pinsOut[12], LOW);
+            digitalWrite(pinsOut[10], !digitalRead(pinsOut[10]));
         }
-        if (control.status[1] == false)
+        else if (WATER_LEVEL_LOW)
+        {
+            digitalWrite(pinsOut[10], LOW);
+            digitalWrite(pinsOut[11], LOW);
+            digitalWrite(pinsOut[12], !digitalRead(pinsOut[12]));
+        }
+        else
+        {
+            digitalWrite(pinsOut[10], LOW);
+            digitalWrite(pinsOut[11], LOW);
+            digitalWrite(pinsOut[12], HIGH);
+        }
+    }
+    else if (!control.status[0])
+    {
+        if (PROD_LEVEL_LOW)
+        {
+            digitalWrite(pinsOut[11], LOW);
+            digitalWrite(pinsOut[12], LOW);
+            digitalWrite(pinsOut[10], !digitalRead(pinsOut[10]));
+        }
+        if (sensordata.temp[0] < ParametersTemp.prodTempSetValue)
+        {
+            digitalWrite(pinsOut[10], LOW);
+            digitalWrite(pinsOut[12], LOW);
+            digitalWrite(pinsOut[11], HIGH);
+        }
+        if (sensordata.temp[0] >= ParametersTemp.productOverTemp)
         {
             digitalWrite(pinsOut[12], LOW);
+            digitalWrite(pinsOut[11], !digitalRead(pinsOut[11]));
+            digitalWrite(pinsOut[10], !digitalRead(pinsOut[10]));
         }
     }
+}
 
-    void readSensors()
+void readSensors()
+{
+    Serial.println("Reading sensors");
+    enable("tempProd");
+    sensordata.temp[0] = operatMax31865_1();
+    enable("tempWater");
+    sensordata.temp[1] = operatMax31865_2();
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+    // Jason Waugh
+
+    //sensordata.mixer[0] = analogRead(A8) / 102.4;
+    //sensordata.mixer[1] = analogRead(A9) / 102.4;
+    WATER_LEVEL_LOW = (digitalRead(pinsIn[5]) == LOW);
+    PROD_LEVEL_LOW = (digitalRead(pinsIn[6]) == LOW);
+    PROD_TOP_UP = (digitalRead(pinsIn[7]) == LOW);
+
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+    ApplicationMonitor.IAmAlive();
+}
+
+void tempController()
+{
+    if (millis() - tempConUpdate >= tempConDelay)
     {
-        Serial.println("Reading sensors");
-        enable("tempProd");
-        sensordata.temp[0] = operatMax31865_1();
-        enable("tempWater");
-        sensordata.temp[1] = operatMax31865_2();
-        sensordata.mixer[0] = analogRead(A8) / 102.4;
-        sensordata.mixer[1] = analogRead(A9) / 102.4;
-        ApplicationMonitor.IAmAlive();
+        //control 24kW element
+        if (sensordata.temp[0] < (Parameters.prodTempSetValue - Parameters.heaterStop[0]))
+        {
+            control.heat[1] = true;
+        }
+        if (sensordata.temp[0] > (Parameters.prodTempSetValue - Parameters.heaterStop[0]))
+        {
+            control.heat[1] = false;
+        }
+        //control 36kW element
+        if (sensordata.temp[0] < (Parameters.prodTempSetValue - Parameters.heaterStop[1]))
+        {
+            control.heat[2] = true;
+        }
+        if (sensordata.temp[0] > (Parameters.prodTempSetValue - Parameters.heaterStop[1]))
+        {
+            control.heat[2] = false;
+        }
+        //control 12kW heater
+        if (sensordata.temp[0] < (Parameters.prodTempSetValue + (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1])))
+        {
+            control.heat[0] = true;
+        }
+        if (sensordata.temp[0] > (Parameters.prodTempSetValue + (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1])))
+        {
+            control.heat[0] = false;
+        }
+        tempConUpdate = millis();
     }
-
-    void tempController()
+    //system ready
+    if (sensordata.temp[0] < (Parameters.prodTempSetValue + (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1])) && sensordata.temp[0] > (Parameters.prodTempSetValue - (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1])))
     {
-        if (millis() - tempConUpdate >= tempConDelay)
-        {
-            //control 24kW element
-            if (sensordata.temp[0] < (Parameters.prodTempSetValue - Parameters.heaterStop[0]))
-            {
-                control.heat[1] = true;
-            }
-            if (sensordata.temp[0] > (Parameters.prodTempSetValue - Parameters.heaterStop[0]))
-            {
-                control.heat[1] = false;
-            }
-            //control 36kW element
-            if (sensordata.temp[0] < (Parameters.prodTempSetValue - Parameters.heaterStop[1]))
-            {
-                control.heat[2] = true;
-            }
-            if (sensordata.temp[0] > (Parameters.prodTempSetValue - Parameters.heaterStop[1]))
-            {
-                control.heat[2] = false;
-            }
-            //control 12kW heater
-            if (sensordata.temp[0] < (Parameters.prodTempSetValue + (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1])))
-            {
-                control.heat[0] = true;
-            }
-            if (sensordata.temp[0] > (Parameters.prodTempSetValue + (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1])))
-            {
-                control.heat[0] = false;
-            }
-            tempConUpdate = millis();
-        }
-        //system ready
-        if (sensordata.temp[0] < (Parameters.prodTempSetValue + (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1])) && sensordata.temp[0] > (Parameters.prodTempSetValue - (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1])))
-        {
-            control.status[0] = true;
-        }
-        if (!(sensordata.temp[0] < (Parameters.prodTempSetValue + (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1])) && sensordata.temp[0] > (Parameters.prodTempSetValue - (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1]))))
-        {
-            control.status[0] = false;
-        }
+        control.status[0] = true;
     }
-
-    bool checkForErrors()
-    {
-        Serial.println("Checking for errors");
-        ApplicationMonitor.IAmAlive();
-        if (sensordata.mixer[0] <= Parameters.lowAlarm[0])
-        {
-            Alarm();
-            errorIndex = 2;
-            return true;
-        }
-        else if (sensordata.mixer[1] <= Parameters.lowAlarm[1])
-        {
-            Alarm();
-            errorIndex = 3;
-            return true;
-        }
-        else if (sensordata.temp[1] >= Parameters.waterOverTemp)
-        {
-            Alarm();
-            errorIndex = 4;
-            return true;
-        }
-
-        return false;
-    }
-
-    void Alarm()
+    if (!(sensordata.temp[0] < (Parameters.prodTempSetValue + (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1])) && sensordata.temp[0] > (Parameters.prodTempSetValue - (Parameters.prodTempBandGap[0] + Parameters.prodTempBandGap[1]))))
     {
         control.status[0] = false;
-        control.status[1] = true;
+    }
+}
+
+bool checkForErrors()
+{
+    Serial.println("Checking for errors");
+    ApplicationMonitor.IAmAlive();
+
+    // Jason Waugh
+    // level sensing now digital bool
+    // no reference to parameters
+    if (PROD_TOP_UP)
+    {
+        errorIndex = 6;
+        return false;
+    }
+    else if (PROD_LEVEL_LOW)
+    {
+        control.prod[1] = false;
+        control.status[0] = false;
+        errorIndex = 2;
+        return false;
+    }
+    else if (WATER_LEVEL_LOW)
+    {
+        control.water[1] = false;
         control.heat[0] = false;
         control.heat[1] = false;
         control.heat[2] = false;
-        control.prod[0] = false;
-        control.prod[1] = false;
-        control.water[0] = false;
-        control.water[1] = false;
+        errorIndex = 3;
+        return false;
+    }
+    else if (sensordata.temp[1] >= Parameters.waterOverTemp)
+    {
+        control.heat[0] = false;
+        control.heat[1] = false;
+        control.heat[2] = false;
+        errorIndex = 4;
+        return true;
+    }
+    // prod over temp
+    else if (sensordata.temp[0] >= parameters.productOverTemp)
+    {
+        control.heat[0] = false;
+        control.heat[1] = false;
+        control.heat[2] = false;
+        control.status[0] = false;
+        errorIndex = 7;
+        return true;
     }
 
-    void saveConfiguration(const char *filename, const parameters &ParametersIn)
+    return false;
+}
+
+void Alarm()
+{
+    control.status[0] = false;
+    control.status[1] = true;
+    control.heat[0] = false;
+    control.heat[1] = false;
+    control.heat[2] = false;
+    control.prod[0] = false;
+    control.prod[1] = false;
+    control.water[0] = false;
+    control.water[1] = false;
+}
+
+void saveConfiguration(const char *filename, const parameters &ParametersIn)
+{
+    // Delete existing file, otherwise the configuration is appended to the file
+    SD.remove(filename);
+
+    // Open file for writing
+    File file = SD.open(filename, FILE_WRITE);
+    if (!file)
     {
-        // Delete existing file, otherwise the configuration is appended to the file
-        SD.remove(filename);
+        Serial.println(F("Failed to create file"));
+        return;
+    }
 
-        // Open file for writing
-        File file = SD.open(filename, FILE_WRITE);
-        if (!file)
+    // Allocate the memory pool on the stack
+    StaticJsonBuffer<256> jsonBuffer;
+
+    // Parse the root object
+    JsonObject &root = jsonBuffer.createObject();
+
+    // Set the values
+    root["prodPumpFlushDelay"] = ParametersTemp.prodFlushPumpDelay;
+    root["prodTempSetValue"] = ParametersTemp.prodTempSetValue;
+    root["waterOverTemp"] = ParametersTemp.waterOverTemp;
+    root["prodTempHysteresis"] = ParametersTemp.prodTempHysteresis;
+    root["heat24stop"] = ParametersTemp.heaterStop[0];
+    root["heat36stop"] = ParametersTemp.heaterStop[1];
+    root["prodLowAlarm"] = ParametersTemp.lowAlarm[0];
+    root["waterLowAlarm"] = ParametersTemp.lowAlarm[1];
+    root["prodBandGap_width"] = ParametersTemp.prodTempBandGap[0];
+    root["prodBandGap_offset"] = ParametersTemp.prodTempBandGap[1];
+
+    // Serialize JSON to file
+    if (root.printTo(file) == 0)
+    {
+        Serial.println(F("Failed to write to file"));
+    }
+
+    // Close the file
+    file.close();
+}
+
+void logSD(const char *execption)
+{
+    enable("SD");
+    String dataString;
+    dataString += timeClient_.getFormattedTime() + ",";
+    if (execption == "No")
+    {
+        if (errorMessage == false)
         {
-            Serial.println(F("Failed to create file"));
-            return;
+            dataString += "No_Error,";
         }
-
-        // Allocate the memory pool on the stack
-        StaticJsonBuffer<256> jsonBuffer;
-
-        // Parse the root object
-        JsonObject &root = jsonBuffer.createObject();
-
-        // Set the values
-        root["prodPumpFlushDelay"] = ParametersTemp.prodFlushPumpDelay;
-        root["prodTempSetValue"] = ParametersTemp.prodTempSetValue;
-        root["waterOverTemp"] = ParametersTemp.waterOverTemp;
-        root["prodTempHysteresis"] = ParametersTemp.prodTempHysteresis;
-        root["heat24stop"] = ParametersTemp.heaterStop[0];
-        root["heat36stop"] = ParametersTemp.heaterStop[1];
-        root["prodLowAlarm"] = ParametersTemp.lowAlarm[0];
-        root["waterLowAlarm"] = ParametersTemp.lowAlarm[1];
-        root["prodBandGap_width"] = ParametersTemp.prodTempBandGap[0];
-        root["prodBandGap_offset"] = ParametersTemp.prodTempBandGap[1];
-
-        // Serialize JSON to file
-        if (root.printTo(file) == 0)
+        else if (errorMessage == true)
         {
-            Serial.println(F("Failed to write to file"));
+            dataString += String(errorMessages[errorIndex]) + ",";
         }
+    }
+    else if (execption != "No")
+    {
+        dataString += String(execption) + ",";
+    }
+    dataString += String(sensordata.temp[0]) + ",";
+    dataString += String(sensordata.temp[1]) + ",";
+    dataString += String(Parameters.prodTempSetValue) + ",";
+    dataString += String(control.heat[0]) + ",";
+    dataString += String(control.heat[1]) + ",";
+    dataString += String(control.heat[2]) + ",";
+    dataString += String(control.status[0]);
 
-        // Close the file
+    File file = SD.open("dataLog.txt", FILE_WRITE);
+
+    if (!file)
+    {
+        Serial.println(F("Failed to create file"));
+        return;
+    }
+
+    if (file)
+    {
+        file.println(dataString);
         file.close();
+        // print to the serial port too:
+        Serial.println(dataString);
     }
-
-    void logSD(const char *execption)
+    else
     {
-        enable("SD");
-        String dataString;
-        dataString += timeClient_.getFormattedTime() + ",";
+        Serial.println("error opening datalog.txt");
+    }
+}
+
+bool prepareForEthernetComms()
+{
+    ApplicationMonitor.IAmAlive();
+    if (ethFailed)
+    {
+        if (ethernetInitRetryIsDue())
+        {
+            ethFailed = startEthernet();
+            ApplicationMonitor.IAmAlive();
+        }
+        else
+        {
+            Serial.println("Ethernet not initialized: Retry not due");
+        }
+        // Else ethernet remains unitialized until timeout before retry.
+    }
+    if (!ethFailed)
+    {
+        const auto linkStatus = Ethernet.linkStatus();
+        if (linkStatus != LinkON)
+        {
+            Serial.println("Cable not connected");
+            ApplicationMonitor.IAmAlive();
+        }
+        else
+        {
+            Ethernet.maintain();
+        }
+        return linkStatus == LinkON;
+    }
+    ApplicationMonitor.IAmAlive();
+    return false;
+}
+
+bool ethernetInitRetryIsDue()
+{
+    static Deadline deadline(Duration::minutes(5));
+    return deadline.resetIfDue();
+    ApplicationMonitor.IAmAlive();
+}
+
+void reboot()
+{
+    wdt_disable();
+    wdt_enable(WDTO_15MS);
+    while (1)
+    {
+    }
+}
+
+bool updateTime()
+{
+    if (prepareForEthernetComms())
+    {
+        timeClient_.update();
+        ApplicationMonitor.IAmAlive();
+        return true;
+    }
+    return false;
+}
+
+bool timeForLogData()
+{
+    static Deadline publish(Duration::minutes(2));
+    static bool firstPublishDone = false;
+    if (publish.isDue() || !firstPublishDone)
+    {
+        firstPublishDone = true;
+        publish.reset();
+        return true;
+    }
+    return false;
+}
+
+bool pushingBoxSend(const char *execption)
+{
+    ApplicationMonitor.IAmAlive();
+    if (prepareForEthernetComms())
+    {
+        ApplicationMonitor.IAmAlive();
+        EthernetClient client;
+        Serial.println("Sending GET request to pushingBox");
+        if (!client.connect(pushingBoxHost, httpPort))
+        {
+            Serial.println("connection to pushingbox failed");
+            return false;
+        }
+        ApplicationMonitor.IAmAlive();
+        String url = "/pushingbox?";
+        url += "devid=";
+        url += devid;
         if (execption == "No")
         {
             if (errorMessage == false)
             {
-                dataString += "No_Error,";
+                url += "&errorLog=\"No_Error\"";
             }
             else if (errorMessage == true)
             {
-                dataString += String(errorMessages[errorIndex]) + ",";
+                url += "&errorLog=\"" + String(errorMessages[errorIndex]) + "\"";
             }
         }
         else if (execption != "No")
         {
-            dataString += String(execption) + ",";
+            url += "&errorLog=\"" + String(execption) + "\"";
         }
-        dataString += String(sensordata.temp[0]) + ",";
-        dataString += String(sensordata.temp[1]) + ",";
-        dataString += String(Parameters.prodTempSetValue) + ",";
-        dataString += String(control.heat[0]) + ",";
-        dataString += String(control.heat[1]) + ",";
-        dataString += String(control.heat[2]) + ",";
-        dataString += String(control.status[0]);
-
-        File file = SD.open("dataLog.txt", FILE_WRITE);
-
-        if (!file)
-        {
-            Serial.println(F("Failed to create file"));
-            return;
-        }
-
-        if (file)
-        {
-            file.println(dataString);
-            file.close();
-            // print to the serial port too:
-            Serial.println(dataString);
-        }
-        else
-        {
-            Serial.println("error opening datalog.txt");
-        }
-    }
-
-    bool prepareForEthernetComms()
-    {
+        url += "&prodTemp=" + String(sensordata.temp[0]);
+        url += "&waterTemp=" + String(sensordata.temp[1]);
+        url += "&prodSetValue=" + String(Parameters.prodTempSetValue);
+        url += "&heat12=" + String(control.heat[0]);
+        url += "&heat24=" + String(control.heat[1]);
+        url += "&heat36=" + String(control.heat[2]);
+        url += "&sysReady=" + String(control.status[0]);
+        url += "&prodMixVal=" + String(sensordata.mixer[0]);
+        url += "&waterMixVal=" + String(sensordata.mixer[1]);
+        client.print("GET " + url);
+        client.println(" HTTP/1.1");
+        client.print("Host: ");
+        client.println(pushingBoxHost);
+        client.println("User-Agent: Arduino");
+        client.println();
+        client.println();
         ApplicationMonitor.IAmAlive();
-        if (ethFailed)
-        {
-            if (ethernetInitRetryIsDue())
-            {
-                ethFailed = startEthernet();
-                ApplicationMonitor.IAmAlive();
-            }
-            else
-            {
-                Serial.println("Ethernet not initialized: Retry not due");
-            }
-            // Else ethernet remains unitialized until timeout before retry.
-        }
-        if (!ethFailed)
-        {
-            const auto linkStatus = Ethernet.linkStatus();
-            if (linkStatus != LinkON)
-            {
-                Serial.println("Cable not connected");
-                ApplicationMonitor.IAmAlive();
-            }
-            else
-            {
-                Ethernet.maintain();
-            }
-            return linkStatus == LinkON;
-        }
-        ApplicationMonitor.IAmAlive();
-        return false;
-    }
+        unsigned long timeout = millis();
 
-    bool ethernetInitRetryIsDue()
-    {
-        static Deadline deadline(Duration::minutes(5));
-        return deadline.resetIfDue();
-        ApplicationMonitor.IAmAlive();
-    }
-
-    void reboot()
-    {
-        wdt_disable();
-        wdt_enable(WDTO_15MS);
-        while (1)
-        {
-        }
-    }
-
-    bool updateTime()
-    {
-        if (prepareForEthernetComms())
-        {
-            timeClient_.update();
-            ApplicationMonitor.IAmAlive();
-            return true;
-        }
-        return false;
-    }
-
-    bool timeForLogData()
-    {
-        static Deadline publish(Duration::minutes(2));
-        static bool firstPublishDone = false;
-        if (publish.isDue() || !firstPublishDone)
-        {
-            firstPublishDone = true;
-            publish.reset();
-            return true;
-        }
-        return false;
-    }
-
-    bool pushingBoxSend(const char *execption)
-    {
-        ApplicationMonitor.IAmAlive();
-        if (prepareForEthernetComms())
+        while (client.available() == 0)
         {
             ApplicationMonitor.IAmAlive();
-            EthernetClient client;
-            Serial.println("Sending GET request to pushingBox");
-            if (!client.connect(pushingBoxHost, httpPort))
+            if (millis() - timeout > 4000)
             {
-                Serial.println("connection to pushingbox failed");
+
+                Serial.println(">>> Client Timeout !");
+                client.stop();
                 return false;
             }
-            ApplicationMonitor.IAmAlive();
-            String url = "/pushingbox?";
-            url += "devid=";
-            url += devid;
-            if (execption == "No")
-            {
-                if (errorMessage == false)
-                {
-                    url += "&errorLog=\"No_Error\"";
-                }
-                else if (errorMessage == true)
-                {
-                    url += "&errorLog=\"" + String(errorMessages[errorIndex]) + "\"";
-                }
-            }
-            else if (execption != "No")
-            {
-                url += "&errorLog=\"" + String(execption) + "\"";
-            }
-            url += "&prodTemp=" + String(sensordata.temp[0]);
-            url += "&waterTemp=" + String(sensordata.temp[1]);
-            url += "&prodSetValue=" + String(Parameters.prodTempSetValue);
-            url += "&heat12=" + String(control.heat[0]);
-            url += "&heat24=" + String(control.heat[1]);
-            url += "&heat36=" + String(control.heat[2]);
-            url += "&sysReady=" + String(control.status[0]);
-            url += "&prodMixVal=" + String(sensordata.mixer[0]);
-            url += "&waterMixVal=" + String(sensordata.mixer[1]);
-            client.print("GET " + url);
-            client.println(" HTTP/1.1");
-            client.print("Host: ");
-            client.println(pushingBoxHost);
-            client.println("User-Agent: Arduino");
-            client.println();
-            client.println();
-            ApplicationMonitor.IAmAlive();
-            unsigned long timeout = millis();
-
-            while (client.available() == 0)
-            {
-                ApplicationMonitor.IAmAlive();
-                if (millis() - timeout > 4000)
-                {
-
-                    Serial.println(">>> Client Timeout !");
-                    client.stop();
-                    return false;
-                }
-            }
-
-            while (client.available())
-            {
-                String line = client.readStringUntil('\r');
-                Serial.println(line);
-            }
-
-            Serial.println("Data Sent!");
-            Serial.println();
-            return true;
         }
-    }
 
-    void displayError(short errorIndex2)
+        while (client.available())
+        {
+            String line = client.readStringUntil('\r');
+            Serial.println(line);
+        }
+
+        Serial.println("Data Sent!");
+        Serial.println();
+        return true;
+    }
+}
+
+void displayError(short errorIndex2)
+{
+    if (errorIndex2 = 6)
+    {
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_ORANGE);
+        tft.setTextSize(5);
+        tft.print("Error:");
+        tft.setTextSize(2);
+        tft.setCursor(40, 50);
+        String error = errorMessages[errorIndex2];
+        error.replace("_", " ");
+        tft.print(error);
+    }
+    else
     {
         tft.setCursor(5, 5);
         tft.setTextColor(ILI9486_RED);
@@ -1283,1764 +1506,1644 @@ void loop()
         error.replace("_", " ");
         tft.print(error);
     }
+}
 
-    void displayMenuUpdate(boolean error)
+void displayMenuUpdate(boolean error)
+{
+    Serial.println();
+    Serial.println("Enter display menu update");
+    enable("Disp");
+    if (error == true)
     {
-        Serial.println();
-        Serial.println("Enter display menu update");
-        enable("Disp");
-        if (error == true)
+        tft.fillScreen(ILI9486_WHITE);
+        displayError(errorIndex);
+    }
+    if (error == false)
+    {
+        if (menu == 1) //Main menu
         {
-            tft.fillScreen(ILI9486_WHITE);
-            displayError(errorIndex);
-        }
-        if (error == false)
-        {
-            if (menu == 1) //Main menu
+            ApplicationMonitor.IAmAlive();
+            if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
             {
-                ApplicationMonitor.IAmAlive();
-                if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
+                if (menuItemMain == 1)
                 {
-                    if (menuItemMain == 1)
-                    {
-                        return;
-                    }
-                    else if (menuItemMain > 1)
-                    {
-                        menuItemMain--;
-                        Serial.println("up was pressed");
-                        tft.fillScreen(ILI9486_WHITE);
-                        displayMainMenu();
-                    }
+                    return;
                 }
-                if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
+                else if (menuItemMain > 1)
                 {
-                    if (menuItemMain == 4)
-                    {
-                        return;
-                    }
-                    else if (menuItemMain < 4)
-                    {
-                        menuItemMain++;
-                        Serial.println("down was pressed");
-                        tft.fillScreen(ILI9486_WHITE);
-                        displayMainMenu();
-                    }
-                }
-                if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
-                {
-                    if (menuItemMain == 1)
-                    {
-                        menu = 2;
-                        menuItemMain = 1;
-                        tft.fillScreen(ILI9486_WHITE);
-                        if (userOpLoggedIn == true)
-                        {
-                            displayMenuSetupOp();
-                        }
-                        else if (userOpLoggedIn == false)
-                        {
-                            userLogin();
-                        }
-                    }
-                    else if (menuItemMain == 2)
-                    {
-                        menu = 3;
-                        flushtype = 1;
-                        menuItemMain = 1;
-                        tft.fillScreen(ILI9486_WHITE);
-                        displayFlushMenu();
-                    }
-                    else if (menuItemMain == 3)
-                    {
-                        menu = 4;
-                        menuItemMain = 1;
-                        tft.fillScreen(ILI9486_WHITE);
-                        if (userManLoggedIn == true)
-                        {
-                            displayMenuSetupMan();
-                        }
-                        else if (userManLoggedIn == false)
-                        {
-                            userLogin();
-                        }
-                    }
-                    else if (menuItemMain == 4)
-                    {
-                        pushingBoxSend("Manual_Reset");
-                        logSD("Manual_Reset");
-                        tft.fillScreen(ILI9486_WHITE);
-                        reboot();
-                    }
-                    else
-                        //--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-                        // Jason Waugh
-                        // Added logic for selection of product prime mode
-                        // 14-05-2020
-                        if (menuItemMain == 5)
-                    {
-                        menu = 5; // Outside of used case range for input monitoring. This ensures no user inputs will effect the priming cycle
-                        mode = 3; // added mode for product priming cycle
-                        PurgeCounter = 0;
-                        tft.fillScreen(ILI9486_WHITE);
-                        menuItemMain = 1;
-                        tft.setCursor(50, 50);
-                        tft.print("PRODUCT PRIMING");
-                    }
-                    //--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-                }
-            }
-            else if (menu == 2) //Program mode
-            {
-                if (userOpLoggedIn == true) //checks if opperator is loged in
-                {
-                    ApplicationMonitor.IAmAlive();
-                    if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
-                    {
-                        menuItemSetupOp--;
-                        tft.fillScreen(ILI9486_WHITE);
-                        Serial.println("up was pressed");
-                        displayMenuSetupOp();
-                    }
-                    if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
-                    {
-                        menuItemSetupOp++;
-                        tft.fillScreen(ILI9486_WHITE);
-                        Serial.println("down was pressed");
-                        displayMenuSetupOp();
-                    }
-                    if (digitalRead(pinsIn[1]) == HIGH) //check if left button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        switch (menuItemSetupOp)
-                        {
-                        case 1:
-                            if (ParametersTemp.prodTempSetValue == 80)
-                            {
-                                displayMenuSetupOp();
-                                return;
-                            }
-                            else if (ParametersTemp.prodTempSetValue > 80)
-                            {
-                                ParametersTemp.prodTempSetValue--;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupOp();
-                            }
-                            break;
-                        case 2:
-                            return;
-                            break;
-                        case 3:
-                            return;
-                            break;
-                        }
-                    }
-                    if (digitalRead(pinsIn[2]) == HIGH) //check if right button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        switch (menuItemSetupOp)
-                        {
-                        case 1:
-                            if (ParametersTemp.prodTempSetValue == 85)
-                            {
-                                displayMenuSetupOp();
-                                return;
-                            }
-                            else if (ParametersTemp.prodTempSetValue < 85)
-                            {
-                                ParametersTemp.prodTempSetValue++;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupOp();
-                            }
-                            break;
-
-                        case 2:
-                            return;
-                            break;
-                        case 3:
-                            return;
-                            break;
-                        }
-                    }
-                    if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        if (menuItemSetupOp == 2)
-                        {
-                            menu = 1;
-                            saveConfiguration(fileConfig, ParametersTemp);
-                            delay(200);
-                            pushingBoxSend("Manual_Reset");
-                            logSD("Manual_Reset");
-                            delay(2000);
-                            reboot();
-                        }
-                        else if (menuItemSetupOp == 3)
-                        {
-                            menu = 1;
-                            userOpLoggedIn = false;
-                            tft.fillScreen(ILI9486_WHITE);
-                            displayMainMenu();
-                        }
-                    }
-                }
-                else if (userOpLoggedIn == false)
-                {
-                    ApplicationMonitor.IAmAlive();
-                    if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
-                    {
-                        Serial.println("up was pressed");
-                        if (passIndex == 1)
-                        {
-                            if (tempPass1 == 9)
-                            {
-                                return;
-                            }
-                            else if (tempPass1 < 9)
-                            {
-                                tempPass1++;
-                            }
-                        }
-                        else if (passIndex == 2)
-                        {
-                            if (tempPass2 == 9)
-                            {
-                                return;
-                            }
-                            else if (tempPass2 < 9)
-                            {
-                                tempPass2++;
-                            }
-                        }
-                        else if (passIndex == 3)
-                        {
-                            if (tempPass3 == 9)
-                            {
-                                return;
-                            }
-                            else if (tempPass3 < 9)
-                            {
-                                tempPass3++;
-                            }
-                        }
-                        else if (passIndex == 4)
-                        {
-                            if (tempPass4 == 9)
-                            {
-                                return;
-                            }
-                            else if (tempPass4 < 9)
-                            {
-                                tempPass4++;
-                            }
-                        }
-                        tft.fillScreen(ILI9486_WHITE);
-                        userLogin();
-                    }
-                    if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        Serial.println("down was pressed");
-                        if (passIndex == 1)
-                        {
-                            if (tempPass1 == 0)
-                            {
-                                return;
-                            }
-                            else if (tempPass1 > 0)
-                            {
-                                tempPass1--;
-                            }
-                        }
-                        else if (passIndex == 2)
-                        {
-                            if (tempPass2 == 0)
-                            {
-                                return;
-                            }
-                            else if (tempPass2 > 0)
-                            {
-                                tempPass2--;
-                            }
-                        }
-                        else if (passIndex == 3)
-                        {
-                            if (tempPass3 == 0)
-                            {
-                                return;
-                            }
-                            else if (tempPass3 > 0)
-                            {
-                                tempPass3--;
-                            }
-                        }
-                        else if (passIndex == 4)
-                        {
-                            if (tempPass4 == 0)
-                            {
-                                return;
-                            }
-                            else if (tempPass4 > 0)
-                            {
-                                tempPass4--;
-                            }
-                        }
-                        tft.fillScreen(ILI9486_WHITE);
-                        userLogin();
-                    }
-                    if (digitalRead(pinsIn[1]) == HIGH) //check if left button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        if (passIndex == 1)
-                        {
-                            return;
-                        }
-                        else if (passIndex > 1)
-                        {
-                            passIndex--;
-                        }
-                        tft.fillScreen(ILI9486_WHITE);
-                        userLogin();
-                    }
-                    if (digitalRead(pinsIn[2]) == HIGH) //check if right button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        if (passIndex == 5)
-                        {
-                            return;
-                        }
-                        else if (passIndex < 5)
-                        {
-                            passIndex++;
-                        }
-                        tft.fillScreen(ILI9486_WHITE);
-                        userLogin();
-                    }
-                    if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
-                    {
-                        tft.fillScreen(ILI9486_WHITE);
-                        userLogin();
-                        ApplicationMonitor.IAmAlive();
-
-                        if (passIndex == 5)
-                        {
-                            menu = 1;
-                            userManLoggedIn = false;
-                            tft.fillScreen(ILI9486_WHITE);
-                            displayMainMenu();
-                        }
-                        else if (tempPass1 == 7 && tempPass2 == 3 && tempPass3 == 8 && tempPass4 == 2) //passcode = 7382
-                        {
-                            userOpLoggedIn = true;
-                            tft.fillScreen(ILI9486_WHITE);
-                            displayMenuSetupOp();
-                            passIndex = 1;
-                            tempPass1 = 0;
-                            tempPass2 = 0;
-                            tempPass3 = 0;
-                            tempPass4 = 0;
-                            displayMenuUpdate(false);
-                        }
-                        else
-                        {
-                            tft.setTextSize(2);
-                            tft.setCursor(20, 220);
-                            tft.setTextColor(ILI9486_RED);
-                            tft.println("Incorect, try again");
-                        }
-                    }
-                }
-            }
-            else if (menu == 3)
-            {
-                ApplicationMonitor.IAmAlive();
-                if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
-                {
-                    flushtype--;
+                    menuItemMain--;
                     Serial.println("up was pressed");
                     tft.fillScreen(ILI9486_WHITE);
-                    displayFlushMenu();
+                    displayMainMenu();
                 }
-                if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
+            }
+            if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
+            {
+                if (menuItemMain == 4)
                 {
-                    flushtype++;
+                    return;
+                }
+                else if (menuItemMain < 4)
+                {
+                    menuItemMain++;
                     Serial.println("down was pressed");
+                    tft.fillScreen(ILI9486_WHITE);
+                    displayMainMenu();
+                }
+            }
+            if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
+            {
+                if (menuItemMain == 1)
+                {
+                    menu = 2;
+                    menuItemMain = 1;
+                    tft.fillScreen(ILI9486_WHITE);
+                    if (userOpLoggedIn == true)
+                    {
+                        displayMenuSetupOp();
+                    }
+                    else if (userOpLoggedIn == false)
+                    {
+                        userLogin();
+                    }
+                }
+                else if (menuItemMain == 2)
+                {
+                    menu = 3;
+                    flushtype = 1;
+                    menuItemMain = 1;
+                    purgeInit = false;
                     tft.fillScreen(ILI9486_WHITE);
                     displayFlushMenu();
                 }
+                else if (menuItemMain == 3)
+                {
+                    menu = 4;
+                    menuItemMain = 1;
+                    tft.fillScreen(ILI9486_WHITE);
+                    if (userManLoggedIn == true)
+                    {
+                        displayMenuSetupMan();
+                    }
+                    else if (userManLoggedIn == false)
+                    {
+                        userLogin();
+                    }
+                }
+                else if (menuItemMain == 4)
+                {
+                    menu = 5;
+                    menuItemMain = 1;
+                    mode = 3;
+
+                    PurgeCounter = 0;
+                    purgeInit = false;
+                    tft.fillScreen(ILI9486_WHITE);
+                    menuItemMain = 1;
+                    tft.setCursor(50, 50);
+                    tft.print("PRODUCT PRIMING");
+                }
+                else if (menuItemMain == 5)
+                {
+                    pushingBoxSend("Manual_Reset");
+                    logSD("Manual_Reset");
+                    tft.fillScreen(ILI9486_WHITE);
+                    reboot();
+                }
+            }
+        }
+        else if (menu == 2) //Program mode
+        {
+            if (userOpLoggedIn == true) //checks if opperator is loged in
+            {
+                ApplicationMonitor.IAmAlive();
+                if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
+                {
+                    menuItemSetupOp--;
+                    tft.fillScreen(ILI9486_WHITE);
+                    Serial.println("up was pressed");
+                    displayMenuSetupOp();
+                }
+                if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
+                {
+                    menuItemSetupOp++;
+                    tft.fillScreen(ILI9486_WHITE);
+                    Serial.println("down was pressed");
+                    displayMenuSetupOp();
+                }
+                if (digitalRead(pinsIn[1]) == HIGH) //check if left button was pressed
+                {
+                    ApplicationMonitor.IAmAlive();
+                    switch (menuItemSetupOp)
+                    {
+                    case 1:
+                        if (ParametersTemp.prodTempSetValue == 80)
+                        {
+                            displayMenuSetupOp();
+                            return;
+                        }
+                        else if (ParametersTemp.prodTempSetValue > 80)
+                        {
+                            ParametersTemp.prodTempSetValue--;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupOp();
+                        }
+                        break;
+                    case 2:
+                        return;
+                        break;
+                    case 3:
+                        return;
+                        break;
+                    }
+                }
+                if (digitalRead(pinsIn[2]) == HIGH) //check if right button was pressed
+                {
+                    ApplicationMonitor.IAmAlive();
+                    switch (menuItemSetupOp)
+                    {
+                    case 1:
+                        if (ParametersTemp.prodTempSetValue == 85)
+                        {
+                            displayMenuSetupOp();
+                            return;
+                        }
+                        else if (ParametersTemp.prodTempSetValue < 85)
+                        {
+                            ParametersTemp.prodTempSetValue++;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupOp();
+                        }
+                        break;
+
+                    case 2:
+                        return;
+                        break;
+                    case 3:
+                        return;
+                        break;
+                    }
+                }
                 if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
                 {
-                    if (flushtype == 1)
-                    {
-                        menu = 3;
-                        mode = 2;
-                        tft.fillScreen(ILI9486_WHITE);
-                        startTime = millis();
-                        return;
-                    }
-                    else if (flushtype == 2)
-                    {
-                        menu = 3;
-                        mode = 2;
-                        tft.fillScreen(ILI9486_WHITE);
-                        startTime = millis();
-                        return;
-                    }
-                    else if (flushtype == 3)
+                    ApplicationMonitor.IAmAlive();
+                    if (menuItemSetupOp == 2)
                     {
                         menu = 1;
-                        mode = 1;
+                        saveConfiguration(fileConfig, ParametersTemp);
+                        delay(200);
+                        pushingBoxSend("Manual_Reset");
+                        logSD("Manual_Reset");
+                        delay(2000);
+                        reboot();
+                    }
+                    else if (menuItemSetupOp == 3)
+                    {
+                        menu = 1;
+                        userOpLoggedIn = false;
                         tft.fillScreen(ILI9486_WHITE);
                         displayMainMenu();
                     }
                 }
             }
-            else if (menu == 4)
+            else if (userOpLoggedIn == false)
             {
-                if (userManLoggedIn == true) //checks if opperator is loged in
+                ApplicationMonitor.IAmAlive();
+                if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
+                {
+                    Serial.println("up was pressed");
+                    if (passIndex == 1)
+                    {
+                        if (tempPass1 == 9)
+                        {
+                            return;
+                        }
+                        else if (tempPass1 < 9)
+                        {
+                            tempPass1++;
+                        }
+                    }
+                    else if (passIndex == 2)
+                    {
+                        if (tempPass2 == 9)
+                        {
+                            return;
+                        }
+                        else if (tempPass2 < 9)
+                        {
+                            tempPass2++;
+                        }
+                    }
+                    else if (passIndex == 3)
+                    {
+                        if (tempPass3 == 9)
+                        {
+                            return;
+                        }
+                        else if (tempPass3 < 9)
+                        {
+                            tempPass3++;
+                        }
+                    }
+                    else if (passIndex == 4)
+                    {
+                        if (tempPass4 == 9)
+                        {
+                            return;
+                        }
+                        else if (tempPass4 < 9)
+                        {
+                            tempPass4++;
+                        }
+                    }
+                    tft.fillScreen(ILI9486_WHITE);
+                    userLogin();
+                }
+                if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
                 {
                     ApplicationMonitor.IAmAlive();
-                    if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
+                    Serial.println("down was pressed");
+                    if (passIndex == 1)
                     {
-                        menuItemSetupMan--;
+                        if (tempPass1 == 0)
+                        {
+                            return;
+                        }
+                        else if (tempPass1 > 0)
+                        {
+                            tempPass1--;
+                        }
+                    }
+                    else if (passIndex == 2)
+                    {
+                        if (tempPass2 == 0)
+                        {
+                            return;
+                        }
+                        else if (tempPass2 > 0)
+                        {
+                            tempPass2--;
+                        }
+                    }
+                    else if (passIndex == 3)
+                    {
+                        if (tempPass3 == 0)
+                        {
+                            return;
+                        }
+                        else if (tempPass3 > 0)
+                        {
+                            tempPass3--;
+                        }
+                    }
+                    else if (passIndex == 4)
+                    {
+                        if (tempPass4 == 0)
+                        {
+                            return;
+                        }
+                        else if (tempPass4 > 0)
+                        {
+                            tempPass4--;
+                        }
+                    }
+                    tft.fillScreen(ILI9486_WHITE);
+                    userLogin();
+                }
+                if (digitalRead(pinsIn[1]) == HIGH) //check if left button was pressed
+                {
+                    ApplicationMonitor.IAmAlive();
+                    if (passIndex == 1)
+                    {
+                        return;
+                    }
+                    else if (passIndex > 1)
+                    {
+                        passIndex--;
+                    }
+                    tft.fillScreen(ILI9486_WHITE);
+                    userLogin();
+                }
+                if (digitalRead(pinsIn[2]) == HIGH) //check if right button was pressed
+                {
+                    ApplicationMonitor.IAmAlive();
+                    if (passIndex == 5)
+                    {
+                        return;
+                    }
+                    else if (passIndex < 5)
+                    {
+                        passIndex++;
+                    }
+                    tft.fillScreen(ILI9486_WHITE);
+                    userLogin();
+                }
+                if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
+                {
+                    tft.fillScreen(ILI9486_WHITE);
+                    userLogin();
+                    ApplicationMonitor.IAmAlive();
+
+                    if (passIndex == 5)
+                    {
+                        menu = 1;
+                        userManLoggedIn = false;
                         tft.fillScreen(ILI9486_WHITE);
-                        Serial.println("up was pressed");
-                        displayMenuSetupMan();
+                        displayMainMenu();
                     }
-                    if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
+                    else if (tempPass1 == 7 && tempPass2 == 3 && tempPass3 == 8 && tempPass4 == 2) //passcode = 7382
                     {
-                        menuItemSetupMan++;
+                        userOpLoggedIn = true;
                         tft.fillScreen(ILI9486_WHITE);
-                        Serial.println("down was pressed");
-                        displayMenuSetupMan();
+                        displayMenuSetupOp();
+                        passIndex = 1;
+                        tempPass1 = 0;
+                        tempPass2 = 0;
+                        tempPass3 = 0;
+                        tempPass4 = 0;
+                        displayMenuUpdate(false);
                     }
-                    if (digitalRead(pinsIn[1]) == HIGH) //check if left button was pressed
+                    else
                     {
-                        ApplicationMonitor.IAmAlive();
-                        switch (menuItemSetupMan)
-                        {
-                        case 1:
-                            if (ParametersTemp.prodFlushPumpDelay == 2)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.prodFlushPumpDelay > 2)
-                            {
-                                ParametersTemp.prodFlushPumpDelay--;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 2:
-                            if (ParametersTemp.heaterStop[0] == 5)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.heaterStop[0] > 5)
-                            {
-                                ParametersTemp.heaterStop[0]--;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 3:
-                            if (ParametersTemp.heaterStop[1] == 15)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.heaterStop[0] > 15)
-                            {
-                                ParametersTemp.heaterStop[1]--;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 4:
-                            if (ParametersTemp.waterOverTemp == 90)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.waterOverTemp > 90)
-                            {
-                                ParametersTemp.waterOverTemp--;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 5:
-                            if (ParametersTemp.lowAlarm[1] == 1)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.lowAlarm[1] > 1)
-                            {
-                                ParametersTemp.lowAlarm[1]--;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 6:
-                            if (ParametersTemp.lowAlarm[0] == 1)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.lowAlarm[0] > 1)
-                            {
-                                ParametersTemp.lowAlarm[0]--;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 7:
-                            if (ParametersTemp.prodTempHysteresis == 5)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.prodTempHysteresis > 5)
-                            {
-                                ParametersTemp.prodTempHysteresis - 5;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 8:
-                            if (ParametersTemp.prodTempBandGap[0] == 1)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.prodTempBandGap[0] > 1)
-                            {
-                                ParametersTemp.prodTempBandGap[0] - 0.1;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 9:
-                            if (ParametersTemp.prodTempBandGap[1] == -2)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.prodTempBandGap[1] > -2)
-                            {
-                                ParametersTemp.prodTempBandGap[1]--;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 10:
-                            return;
-                            break;
-                        case 11:
-                            return;
-                            break;
-                        }
-                    }
-                    if (digitalRead(pinsIn[2]) == HIGH) //check if right button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        switch (menuItemSetupMan)
-                        {
-                        case 1:
-                            if (ParametersTemp.prodFlushPumpDelay == 60)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.prodFlushPumpDelay < 60)
-                            {
-                                ParametersTemp.prodFlushPumpDelay++;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 2:
-                            if (ParametersTemp.heaterStop[0] == 20)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.heaterStop[0] < 20)
-                            {
-                                ParametersTemp.heaterStop[0]++;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 3:
-                            if (ParametersTemp.heaterStop[1] == 30)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.heaterStop[0] < 30)
-                            {
-                                ParametersTemp.heaterStop[1]++;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 4:
-                            if (ParametersTemp.waterOverTemp == 95)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.waterOverTemp < 95)
-                            {
-                                ParametersTemp.waterOverTemp++;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 5:
-                            if (ParametersTemp.lowAlarm[1] == 10)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.lowAlarm[1] < 10)
-                            {
-                                ParametersTemp.lowAlarm[1]++;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 6:
-                            if (ParametersTemp.lowAlarm[0] == 10)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.lowAlarm[0] < 10)
-                            {
-                                ParametersTemp.lowAlarm[0]++;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 7:
-                            if (ParametersTemp.prodTempHysteresis == 60)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.prodTempHysteresis < 60)
-                            {
-                                ParametersTemp.prodTempHysteresis + 5;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 8:
-                            if (ParametersTemp.prodTempBandGap[0] == 4)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.prodTempBandGap[0] < 4)
-                            {
-                                ParametersTemp.prodTempBandGap[0] + 0.1;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 9:
-                            if (ParametersTemp.prodTempBandGap[1] == 2)
-                            {
-                                return;
-                            }
-                            else if (ParametersTemp.prodTempBandGap[1] < 2)
-                            {
-                                ParametersTemp.prodTempBandGap[1]++;
-                                tft.fillScreen(ILI9486_WHITE);
-                                displayMenuSetupMan();
-                            }
-                            break;
-                        case 10:
-                            return;
-                            break;
-                        case 11:
-                            return;
-                            break;
-                        }
-                    }
-                    if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        if (menuItemSetupMan == 10)
-                        {
-                            menu = 1;
-                            saveConfiguration(fileConfig, ParametersTemp);
-                            pushingBoxSend("Manual_Reset");
-                            logSD("Manual_Reset");
-                            delay(2000);
-                            reboot();
-                        }
-                        else if (menuItemSetupMan == 11)
-                        {
-                            menu = 1;
-                            userManLoggedIn = false;
-                            tft.fillScreen(ILI9486_WHITE);
-                            displayMainMenu();
-                        }
+                        tft.setTextSize(2);
+                        tft.setCursor(20, 220);
+                        tft.setTextColor(ILI9486_RED);
+                        tft.println("Incorect, try again");
                     }
                 }
-                else if (userManLoggedIn == false)
+            }
+        }
+        else if (menu == 3)
+        {
+            ApplicationMonitor.IAmAlive();
+            if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
+            {
+                flushtype--;
+                Serial.println("up was pressed");
+                tft.fillScreen(ILI9486_WHITE);
+                displayFlushMenu();
+            }
+            if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
+            {
+                flushtype++;
+                Serial.println("down was pressed");
+                tft.fillScreen(ILI9486_WHITE);
+                displayFlushMenu();
+            }
+            if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
+            {
+                if (flushtype == 1)
+                {
+                    menu = 3;
+                    mode = 2;
+                    purgeInit = false;
+                    tft.fillScreen(ILI9486_WHITE);
+                    startTime = millis();
+                    return;
+                }
+                else if (flushtype == 2)
+                {
+                    menu = 3;
+                    mode = 2;
+                    tft.fillScreen(ILI9486_WHITE);
+                    purgeInit = false;
+                    startTime = millis();
+                    return;
+                }
+                else if (flushtype == 3)
+                {
+                    menu = 1;
+                    mode = 1;
+                    tft.fillScreen(ILI9486_WHITE);
+                    displayMainMenu();
+                }
+            }
+        }
+        else if (menu == 4)
+        {
+            if (userManLoggedIn == true) //checks if opperator is loged in
+            {
+                ApplicationMonitor.IAmAlive();
+                if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
+                {
+                    menuItemSetupMan--;
+                    tft.fillScreen(ILI9486_WHITE);
+                    Serial.println("up was pressed");
+                    displayMenuSetupMan();
+                }
+                if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
+                {
+                    menuItemSetupMan++;
+                    tft.fillScreen(ILI9486_WHITE);
+                    Serial.println("down was pressed");
+                    displayMenuSetupMan();
+                }
+                if (digitalRead(pinsIn[1]) == HIGH) //check if left button was pressed
                 {
                     ApplicationMonitor.IAmAlive();
-                    if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
+                    switch (menuItemSetupMan)
                     {
-                        Serial.println("up was pressed");
-                        if (passIndex == 1)
-                        {
-                            if (tempPass1 == 9)
-                            {
-                                return;
-                            }
-                            else if (tempPass1 < 9)
-                            {
-                                tempPass1++;
-                            }
-                        }
-                        else if (passIndex == 2)
-                        {
-                            if (tempPass2 == 9)
-                            {
-                                return;
-                            }
-                            else if (tempPass2 < 9)
-                            {
-                                tempPass2++;
-                            }
-                        }
-                        else if (passIndex == 3)
-                        {
-                            if (tempPass3 == 9)
-                            {
-                                return;
-                            }
-                            else if (tempPass3 < 9)
-                            {
-                                tempPass3++;
-                            }
-                        }
-                        else if (passIndex == 4)
-                        {
-                            if (tempPass4 == 9)
-                            {
-                                return;
-                            }
-                            else if (tempPass4 < 9)
-                            {
-                                tempPass4++;
-                            }
-                        }
-                        tft.fillScreen(ILI9486_WHITE);
-                        userLogin();
-                    }
-                    if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        Serial.println("down was pressed");
-                        if (passIndex == 1)
-                        {
-                            if (tempPass1 == 1)
-                            {
-                                return;
-                            }
-                            else if (tempPass1 > 1)
-                            {
-                                tempPass1--;
-                            }
-                        }
-                        else if (passIndex == 2)
-                        {
-                            if (tempPass2 == 1)
-                            {
-                                return;
-                            }
-                            else if (tempPass2 > 1)
-                            {
-                                tempPass2--;
-                            }
-                        }
-                        else if (passIndex == 3)
-                        {
-                            if (tempPass3 == 1)
-                            {
-                                return;
-                            }
-                            else if (tempPass3 > 1)
-                            {
-                                tempPass3--;
-                            }
-                        }
-                        else if (passIndex == 4)
-                        {
-                            if (tempPass4 == 1)
-                            {
-                                return;
-                            }
-                            else if (tempPass4 > 1)
-                            {
-                                tempPass4--;
-                            }
-                        }
-                        tft.fillScreen(ILI9486_WHITE);
-                        userLogin();
-                    }
-                    if (digitalRead(pinsIn[1]) == HIGH) //check if left button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        if (passIndex == 1)
+                    case 1:
+                        if (ParametersTemp.prodFlushPumpDelay == 2)
                         {
                             return;
                         }
-                        else if (passIndex > 1)
+                        else if (ParametersTemp.prodFlushPumpDelay > 2)
                         {
-                            passIndex--;
-                        }
-                        tft.fillScreen(ILI9486_WHITE);
-                        userLogin();
-                    }
-                    if (digitalRead(pinsIn[2]) == HIGH) //check if right button was pressed
-                    {
-                        ApplicationMonitor.IAmAlive();
-                        if (passIndex == 5)
-                        {
-                            return;
-                        }
-                        else if (passIndex < 5)
-                        {
-                            passIndex++;
-                        }
-                        tft.fillScreen(ILI9486_WHITE);
-                        userLogin();
-                    }
-                    if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
-                    {
-                        tft.fillScreen(ILI9486_WHITE);
-                        userLogin();
-                        ApplicationMonitor.IAmAlive();
-
-                        if (passIndex == 5)
-                        {
-                            menu = 1;
-                            userManLoggedIn = false;
-                            tft.fillScreen(ILI9486_WHITE);
-                            displayMainMenu();
-                        }
-                        else if (tempPass1 == 3 && tempPass2 == 7 && tempPass3 == 4 && tempPass4 == 9) //passcode = 3749
-                        {
-                            userManLoggedIn = true;
+                            ParametersTemp.prodFlushPumpDelay--;
                             tft.fillScreen(ILI9486_WHITE);
                             displayMenuSetupMan();
-                            passIndex = 1;
-                            tempPass1 = 0;
-                            tempPass2 = 0;
-                            tempPass3 = 0;
-                            tempPass4 = 0;
-                            displayMenuUpdate(false);
                         }
-                        else
+                        break;
+                    case 2:
+                        if (ParametersTemp.heaterStop[0] == 5)
                         {
-                            tft.setTextSize(2);
-                            tft.setCursor(20, 220);
-                            tft.setTextColor(ILI9486_RED);
-                            tft.println("Incorect, try again");
+                            return;
                         }
+                        else if (ParametersTemp.heaterStop[0] > 5)
+                        {
+                            ParametersTemp.heaterStop[0]--;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 3:
+                        if (ParametersTemp.heaterStop[1] == 15)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.heaterStop[0] > 15)
+                        {
+                            ParametersTemp.heaterStop[1]--;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 4:
+                        if (ParametersTemp.waterOverTemp == 90)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.waterOverTemp > 90)
+                        {
+                            ParametersTemp.waterOverTemp--;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 5:
+                        if (ParametersTemp.productOverTemp == 80)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.productOverTemp > 80)
+                        {
+                            ParametersTemp.productOverTemp--;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 6:
+                        if (ParametersTemp.prodTempHysteresis == 5)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.prodTempHysteresis > 5)
+                        {
+                            ParametersTemp.prodTempHysteresis - 5;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 7:
+                        if (ParametersTemp.prodTempBandGap[0] == 1)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.prodTempBandGap[0] > 1)
+                        {
+                            ParametersTemp.prodTempBandGap[0] - 0.1;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 8:
+                        if (ParametersTemp.prodTempBandGap[1] == -2)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.prodTempBandGap[1] > -2)
+                        {
+                            ParametersTemp.prodTempBandGap[1]--;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 9:
+                        return;
+                        break;
+                    case 10:
+                        return;
+                        break;
+                    }
+                }
+                if (digitalRead(pinsIn[2]) == HIGH) //check if right button was pressed
+                {
+                    ApplicationMonitor.IAmAlive();
+                    switch (menuItemSetupMan)
+                    {
+                    case 1:
+                        if (ParametersTemp.prodFlushPumpDelay == 60)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.prodFlushPumpDelay < 60)
+                        {
+                            ParametersTemp.prodFlushPumpDelay++;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 2:
+                        if (ParametersTemp.heaterStop[0] == 20)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.heaterStop[0] < 20)
+                        {
+                            ParametersTemp.heaterStop[0]++;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 3:
+                        if (ParametersTemp.heaterStop[1] == 30)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.heaterStop[0] < 30)
+                        {
+                            ParametersTemp.heaterStop[1]++;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 4:
+                        if (ParametersTemp.waterOverTemp == 95)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.waterOverTemp < 95)
+                        {
+                            ParametersTemp.waterOverTemp++;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 5:
+                        if (ParametersTemp.productOverTemp == 90)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.productOverTemp < 90)
+                        {
+                            ParametersTemp.productOverTemp++;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 6:
+                        if (ParametersTemp.prodTempHysteresis == 60)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.prodTempHysteresis < 60)
+                        {
+                            ParametersTemp.prodTempHysteresis + 5;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 7:
+                        if (ParametersTemp.prodTempBandGap[0] == 4)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.prodTempBandGap[0] < 4)
+                        {
+                            ParametersTemp.prodTempBandGap[0] + 0.1;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 8:
+                        if (ParametersTemp.prodTempBandGap[1] == 2)
+                        {
+                            return;
+                        }
+                        else if (ParametersTemp.prodTempBandGap[1] < 2)
+                        {
+                            ParametersTemp.prodTempBandGap[1]++;
+                            tft.fillScreen(ILI9486_WHITE);
+                            displayMenuSetupMan();
+                        }
+                        break;
+                    case 9:
+                        return;
+                        break;
+                    case 10:
+                        return;
+                        break;
+                    }
+                }
+                if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
+                {
+                    ApplicationMonitor.IAmAlive();
+                    if (menuItemSetupMan == 9)
+                    {
+                        menu = 1;
+                        saveConfiguration(fileConfig, ParametersTemp);
+                        pushingBoxSend("Manual_Reset");
+                        logSD("Manual_Reset");
+                        delay(2000);
+                        reboot();
+                    }
+                    else if (menuItemSetupMan == 10)
+                    {
+                        menu = 1;
+                        userManLoggedIn = false;
+                        tft.fillScreen(ILI9486_WHITE);
+                        displayMainMenu();
+                    }
+                }
+            }
+            else if (userManLoggedIn == false)
+            {
+                ApplicationMonitor.IAmAlive();
+                if (digitalRead(pinsIn[3]) == HIGH) //check if up button was pressed
+                {
+                    Serial.println("up was pressed");
+                    if (passIndex == 1)
+                    {
+                        if (tempPass1 == 9)
+                        {
+                            return;
+                        }
+                        else if (tempPass1 < 9)
+                        {
+                            tempPass1++;
+                        }
+                    }
+                    else if (passIndex == 2)
+                    {
+                        if (tempPass2 == 9)
+                        {
+                            return;
+                        }
+                        else if (tempPass2 < 9)
+                        {
+                            tempPass2++;
+                        }
+                    }
+                    else if (passIndex == 3)
+                    {
+                        if (tempPass3 == 9)
+                        {
+                            return;
+                        }
+                        else if (tempPass3 < 9)
+                        {
+                            tempPass3++;
+                        }
+                    }
+                    else if (passIndex == 4)
+                    {
+                        if (tempPass4 == 9)
+                        {
+                            return;
+                        }
+                        else if (tempPass4 < 9)
+                        {
+                            tempPass4++;
+                        }
+                    }
+                    tft.fillScreen(ILI9486_WHITE);
+                    userLogin();
+                }
+                if (digitalRead(pinsIn[4]) == HIGH) //check if down button was pressed
+                {
+                    ApplicationMonitor.IAmAlive();
+                    Serial.println("down was pressed");
+                    if (passIndex == 1)
+                    {
+                        if (tempPass1 == 1)
+                        {
+                            return;
+                        }
+                        else if (tempPass1 > 1)
+                        {
+                            tempPass1--;
+                        }
+                    }
+                    else if (passIndex == 2)
+                    {
+                        if (tempPass2 == 1)
+                        {
+                            return;
+                        }
+                        else if (tempPass2 > 1)
+                        {
+                            tempPass2--;
+                        }
+                    }
+                    else if (passIndex == 3)
+                    {
+                        if (tempPass3 == 1)
+                        {
+                            return;
+                        }
+                        else if (tempPass3 > 1)
+                        {
+                            tempPass3--;
+                        }
+                    }
+                    else if (passIndex == 4)
+                    {
+                        if (tempPass4 == 1)
+                        {
+                            return;
+                        }
+                        else if (tempPass4 > 1)
+                        {
+                            tempPass4--;
+                        }
+                    }
+                    tft.fillScreen(ILI9486_WHITE);
+                    userLogin();
+                }
+                if (digitalRead(pinsIn[1]) == HIGH) //check if left button was pressed
+                {
+                    ApplicationMonitor.IAmAlive();
+                    if (passIndex == 1)
+                    {
+                        return;
+                    }
+                    else if (passIndex > 1)
+                    {
+                        passIndex--;
+                    }
+                    tft.fillScreen(ILI9486_WHITE);
+                    userLogin();
+                }
+                if (digitalRead(pinsIn[2]) == HIGH) //check if right button was pressed
+                {
+                    ApplicationMonitor.IAmAlive();
+                    if (passIndex == 5)
+                    {
+                        return;
+                    }
+                    else if (passIndex < 5)
+                    {
+                        passIndex++;
+                    }
+                    tft.fillScreen(ILI9486_WHITE);
+                    userLogin();
+                }
+                if (digitalRead(pinsIn[0]) == HIGH) //check if enter button was pressed
+                {
+                    tft.fillScreen(ILI9486_WHITE);
+                    userLogin();
+                    ApplicationMonitor.IAmAlive();
+
+                    if (passIndex == 5)
+                    {
+                        menu = 1;
+                        userManLoggedIn = false;
+                        tft.fillScreen(ILI9486_WHITE);
+                        displayMainMenu();
+                    }
+                    else if (tempPass1 == 3 && tempPass2 == 7 && tempPass3 == 4 && tempPass4 == 9) //passcode = 3749
+                    {
+                        userManLoggedIn = true;
+                        tft.fillScreen(ILI9486_WHITE);
+                        displayMenuSetupMan();
+                        passIndex = 1;
+                        tempPass1 = 0;
+                        tempPass2 = 0;
+                        tempPass3 = 0;
+                        tempPass4 = 0;
+                        displayMenuUpdate(false);
+                    }
+                    else
+                    {
+                        tft.setTextSize(2);
+                        tft.setCursor(20, 220);
+                        tft.setTextColor(ILI9486_RED);
+                        tft.println("Incorect, try again");
                     }
                 }
             }
         }
     }
+}
 
-    void enable(String Cs)
+void enable(String Cs)
+{
+    if (Cs == "eth")
     {
-        if (Cs == "eth")
-        {
-            digitalWrite(pinsOut[0], LOW);
-            digitalWrite(pinsOut[1], HIGH);
-            digitalWrite(7, LOW);
-        }
-        else if (Cs == "SD")
-        {
-            digitalWrite(pinsOut[0], HIGH);
-            digitalWrite(pinsOut[1], LOW);
-            digitalWrite(7, LOW);
-        }
-        else if (Cs == "Disp")
-        {
-            digitalWrite(pinsOut[0], HIGH);
-            digitalWrite(pinsOut[1], HIGH);
-            digitalWrite(7, HIGH);
-        }
+        digitalWrite(pinsOut[0], LOW);
+        digitalWrite(pinsOut[1], HIGH);
+        digitalWrite(7, LOW);
     }
-
-    void displayMenuSetupOp()
+    else if (Cs == "SD")
     {
-        switch (menuItemSetupOp)
-        {
-        case 0:
-            menuItemSetupOp = 1;
-            break;
-        case 1:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("Setup:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print(">Product Temp set value");
-            tft.setCursor(400, 50);
-            tft.print(String(ParametersTemp.prodTempSetValue));
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(40, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(40, 300);
-            tft.print("ABORT");
-            break;
-        case 2:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("Setup:");
-            tft.setTextSize(2);
-            tft.setCursor(40, 50);
-            tft.print("Product Temp set value");
-            tft.setCursor(400, 50);
-            tft.print(String(ParametersTemp.prodTempSetValue));
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(20, 275);
-            tft.print(">DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(40, 300);
-            tft.print("ABORT");
-            break;
-        case 3:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("Setup:");
-            tft.setTextSize(2);
-            tft.setCursor(40, 50);
-            tft.print("Product Temp set value");
-            tft.setCursor(400, 50);
-            tft.print(String(ParametersTemp.prodTempSetValue));
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(40, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print(">ABORT");
-            break;
-        case 4:
-            menuItemSetupOp = 3;
-            break;
-        }
+        digitalWrite(pinsOut[0], HIGH);
+        digitalWrite(pinsOut[1], LOW);
+        digitalWrite(7, LOW);
     }
-
-    void displayFlushMenu()
+    else if (Cs == "Disp")
     {
-        switch (flushtype)
-        {
-        case 0:
-            flushtype = 1;
-            break;
-        case 1:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("FLUSH MODE:");
-            tft.setTextSize(3);
-            tft.setCursor(20, 50);
-            tft.print(">Hot flush");
-            tft.setCursor(40, 80);
-            tft.print("Cold flush");
-            tft.setCursor(40, 140);
-            tft.print("Abort");
-            break;
-        case 2:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("FLUSH MODE:");
-            tft.setTextSize(3);
-            tft.setCursor(40, 50);
-            tft.print("Hot flush");
-            tft.setCursor(20, 80);
-            tft.print(">Cold flush");
-            tft.setCursor(40, 140);
-            tft.print("Abort");
-            break;
-        case 3:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("FLUSH MODE:");
-            tft.setTextSize(3);
-            tft.setCursor(40, 50);
-            tft.print("Hot flush");
-            tft.setCursor(40, 80);
-            tft.print("Cold flush");
-            tft.setCursor(20, 140);
-            tft.print(">Abort");
-            break;
-        case 4:
-            flushtype = 3;
-            break;
-        }
+        digitalWrite(pinsOut[0], HIGH);
+        digitalWrite(pinsOut[1], HIGH);
+        digitalWrite(7, HIGH);
     }
+}
 
-    void displayMainMenu()
+void displayMenuSetupOp()
+{
+    switch (menuItemSetupOp)
     {
-        switch (menuItemMain)
-        {
-        case 0:
-            menuItemMain = 1;
-            break;
-        case 1:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("MENU:");
-            tft.setTextSize(3);
-            tft.setCursor(20, 50);
-            tft.print(">PROGRAM MODE");
-            tft.setCursor(40, 80);
-            tft.print("PRODUCT FLUSH MODE");
-            tft.setCursor(40, 110);
-            tft.print("MAINTENACE MODE");
-            tft.setCursor(40, 140);
-            tft.print("SYSTEM RESET");
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            // Jason Waugh
-            // Adding Option on main menu for PRODUCT PRIMING
-            // 14-05-2020
-
-            tft.setCursor(40, 170);
-            tft.print("PRODUCT PRIME MODE");
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            break;
-        case 2:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("MENU:");
-            tft.setTextSize(3);
-            tft.setCursor(40, 50);
-            tft.print("PROGRAM MODE");
-            tft.setCursor(20, 80);
-            tft.print(">PRODUCT FLUSH MODE");
-            tft.setCursor(40, 110);
-            tft.print("MAINTENACE MODE");
-            tft.setCursor(40, 140);
-            tft.print("SYSTEM RESET");
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            // Jason Waugh
-            // Adding Option on main menu for PRODUCT PRIMING
-            // 14-05-2020
-
-            tft.setCursor(40, 170);
-            tft.print("PRODUCT PRIME MODE");
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            break;
-        case 3:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("MENU:");
-            tft.setTextSize(3);
-            tft.setCursor(40, 50);
-            tft.print("PROGRAM MODE");
-            tft.setCursor(40, 80);
-            tft.print("PRODUCT FLUSH MODE");
-            tft.setCursor(20, 110);
-            tft.print(">MAINTENACE MODE");
-            tft.setCursor(40, 140);
-            tft.print("SYSTEM RESET");
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            // Jason Waugh
-            // Adding Option on main menu for PRODUCT PRIMING
-            // 14-05-2020
-
-            tft.setCursor(40, 170);
-            tft.print("PRODUCT PRIME MODE");
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            break;
-        case 4:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("MENU:");
-            tft.setTextSize(3);
-            tft.setCursor(40, 50);
-            tft.print("PROGRAM MODE");
-            tft.setCursor(40, 80);
-            tft.print("PRODUCT FLUSH MODE");
-            tft.setCursor(40, 110);
-            tft.print("MAINTENACE MODE");
-            tft.setCursor(20, 140);
-            tft.print(">SYSTEM RESET");
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            // Jason Waugh
-            // Adding Option on main menu for PRODUCT PRIMING
-            // 14-05-2020
-
-            tft.setCursor(40, 170);
-            tft.print("PRODUCT PRIME MODE");
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            break;
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            // Jason Waugh
-            // Adding Case 5 for selection of product prime cycle
-            // 14-05-2020
-        case 5:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("MENU:");
-            tft.setTextSize(3);
-            tft.setCursor(40, 50);
-            tft.print("PROGRAM MODE");
-            tft.setCursor(40, 80);
-            tft.print("PRODUCT FLUSH MODE");
-            tft.setCursor(40, 110);
-            tft.print("MAINTENACE MODE");
-            tft.setCursor(20, 140);
-            tft.print("SYSTEM RESET");
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            // Jason Waugh
-            // Adding Option on main menu for PRODUCT PRIMING
-            // 14-05-2020
-
-            tft.setCursor(40, 170);
-            tft.print(">PRODUCT PRIME MODE");
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            //-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-            break;
-        case 6:
-            menuItemMain = 5;
-            break;
-        }
-    }
-
-    void displayMenuSetupMan()
-    {
-        switch (menuItemSetupMan)
-        {
-        case 0:
-            menuItemSetupMan = 1;
-            break;
-        case 1:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 50);
-            tft.print(">Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setCursor(20, 75);
-            tft.print("24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setCursor(20, 100);
-            tft.print("36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setCursor(20, 125);
-            tft.print("Water over temp alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setCursor(20, 150);
-            tft.print("Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setCursor(20, 175);
-            tft.print("Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setCursor(20, 200);
-            tft.print("Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setCursor(20, 225);
-            tft.print("Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setCursor(20, 250);
-            tft.print("Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(20, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print("ABORT");
-            break;
-        case 2:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print("Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 75);
-            tft.print(">24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setCursor(20, 100);
-            tft.print("36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setCursor(20, 125);
-            tft.print("Water over temp alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setCursor(20, 150);
-            tft.print("Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setCursor(20, 175);
-            tft.print("Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setCursor(20, 200);
-            tft.print("Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setCursor(20, 225);
-            tft.print("Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setCursor(20, 250);
-            tft.print("Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(20, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print("ABORT");
-            break;
-        case 3:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print("Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setCursor(20, 75);
-            tft.print("24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 100);
-            tft.print(">36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setCursor(20, 125);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.print("Water over temp alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setCursor(20, 150);
-            tft.print("Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setCursor(20, 175);
-            tft.print("Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setCursor(20, 200);
-            tft.print("Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setCursor(20, 225);
-            tft.print("Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setCursor(20, 250);
-            tft.print("Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(20, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print("ABORT");
-            break;
-        case 4:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print("Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setCursor(20, 75);
-            tft.print("24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setCursor(20, 100);
-            tft.print("36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 125);
-            tft.print(">Water over heat alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setCursor(20, 150);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.print("Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setCursor(20, 175);
-            tft.print("Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setCursor(20, 200);
-            tft.print("Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setCursor(20, 225);
-            tft.print("Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setCursor(20, 250);
-            tft.print("Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(20, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print("ABORT");
-            break;
-        case 5:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print("Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setCursor(20, 75);
-            tft.print("24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setCursor(20, 100);
-            tft.print("36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setCursor(20, 125);
-            tft.print("Water over temp alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 150);
-            tft.print(">Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setCursor(20, 175);
-            tft.print("Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setCursor(20, 200);
-            tft.print("Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setCursor(20, 225);
-            tft.print("Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setCursor(20, 250);
-            tft.print("Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(20, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print("ABORT");
-            break;
-        case 6:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print("Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setCursor(20, 75);
-            tft.print("24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setCursor(20, 100);
-            tft.print("36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setCursor(20, 125);
-            tft.print("Water over temp alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setCursor(20, 150);
-            tft.print("Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 175);
-            tft.print(">Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setCursor(20, 200);
-            tft.print("Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setCursor(20, 225);
-            tft.print("Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setCursor(20, 250);
-            tft.print("Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(20, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print("ABORT");
-            break;
-        case 7:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print("Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setCursor(20, 75);
-            tft.print("24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setCursor(20, 100);
-            tft.print("36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setCursor(20, 125);
-            tft.print("Water over temp alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setCursor(20, 150);
-            tft.print("Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setCursor(20, 175);
-            tft.print("Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 200);
-            tft.print(">Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setCursor(20, 225);
-            tft.print("Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setCursor(20, 250);
-            tft.print("Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(20, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print("ABORT");
-            break;
-        case 8:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print("Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setCursor(20, 75);
-            tft.print("24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setCursor(20, 100);
-            tft.print("36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setCursor(20, 125);
-            tft.print("Water over temp alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setCursor(20, 150);
-            tft.print("Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setCursor(20, 175);
-            tft.print("Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setCursor(20, 200);
-            tft.print("Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 225);
-            tft.print(">Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setCursor(20, 250);
-            tft.print("Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(20, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print("ABORT");
-            break;
-        case 9:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print("Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setCursor(20, 75);
-            tft.print("24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setCursor(20, 100);
-            tft.print("36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setCursor(20, 125);
-            tft.print("Water over temp alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setCursor(20, 150);
-            tft.print("Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setCursor(20, 175);
-            tft.print("Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setCursor(20, 200);
-            tft.print("Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setCursor(20, 225);
-            tft.print("Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 250);
-            tft.print(">Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setTextColor(ILI9486_BLUE);
-            tft.setCursor(20, 275);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print("ABORT");
-            break;
-        case 10:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print("Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setCursor(20, 75);
-            tft.print("24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setCursor(20, 100);
-            tft.print("36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setCursor(20, 125);
-            tft.print("Water over temp alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setCursor(20, 150);
-            tft.print("Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setCursor(20, 175);
-            tft.print("Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setCursor(20, 200);
-            tft.print("Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setCursor(20, 225);
-            tft.print("Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setCursor(20, 250);
-            tft.print("Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 275);
-            tft.print(">DONE");
-            tft.setTextColor(ILI9486_GREEN);
-            tft.setCursor(20, 300);
-            tft.print("ABORT");
-            break;
-        case 11:
-            tft.setCursor(5, 5);
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setTextSize(5);
-            tft.print("PROGRAM MODE:");
-            tft.setTextSize(2);
-            tft.setCursor(20, 50);
-            tft.print("Product pump delay time");
-            tft.setCursor(415, 50);
-            tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
-            tft.setCursor(20, 75);
-            tft.print("24kW heater stop Temp below SP");
-            tft.setCursor(415, 75);
-            tft.print(String(ParametersTemp.heaterStop[0]) + "C");
-            tft.setCursor(20, 100);
-            tft.print("36kW heater stop Temp below SP");
-            tft.setCursor(415, 100);
-            tft.print(String(ParametersTemp.heaterStop[1]) + "C");
-            tft.setCursor(20, 125);
-            tft.print("Water over temp alarm value");
-            tft.setCursor(415, 125);
-            tft.print(String(ParametersTemp.waterOverTemp) + "C");
-            tft.setCursor(20, 150);
-            tft.print("Water low alarm value (1-10)");
-            tft.setCursor(415, 150);
-            tft.print(String(ParametersTemp.lowAlarm[1]));
-            tft.setCursor(20, 175);
-            tft.print("Product low alarm value (1-10)");
-            tft.setCursor(415, 175);
-            tft.print(String(ParametersTemp.lowAlarm[0]));
-            tft.setCursor(20, 200);
-            tft.print("Product Temp hysteresis time");
-            tft.setCursor(415, 200);
-            tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
-            tft.setCursor(20, 225);
-            tft.print("Product Temp band gap (WIDTH)");
-            tft.setCursor(415, 225);
-            tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
-            tft.setCursor(20, 250);
-            tft.print("Product Temp band gap (OFFSET)");
-            tft.setCursor(415, 250);
-            tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
-            tft.setCursor(20, 275);
-            tft.setTextColor(ILI9486_BLUE);
-            tft.print("DONE");
-            tft.setTextColor(ILI9486_RED);
-            tft.setCursor(7, 300);
-            tft.print(">ABORT");
-            break;
-        case 12:
-            menuItemSetupMan = 11;
-            break;
-        }
-    }
-
-    void userLogin()
-    {
-        ApplicationMonitor.IAmAlive();
+    case 0:
+        menuItemSetupOp = 1;
+        break;
+    case 1:
         tft.setCursor(5, 5);
         tft.setTextColor(ILI9486_BLACK);
-        tft.setTextSize(3);
-        tft.print("Enter your password");
+        tft.setTextSize(5);
+        tft.print("Setup:");
+        tft.setTextSize(2);
+        tft.setCursor(20, 50);
+        tft.print(">Product Temp set value");
+        tft.setCursor(400, 50);
+        tft.print(String(ParametersTemp.prodTempSetValue));
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(40, 275);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(40, 300);
+        tft.print("ABORT");
+        break;
+    case 2:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("Setup:");
+        tft.setTextSize(2);
+        tft.setCursor(40, 50);
+        tft.print("Product Temp set value");
+        tft.setCursor(400, 50);
+        tft.print(String(ParametersTemp.prodTempSetValue));
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(20, 275);
+        tft.print(">DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(40, 300);
+        tft.print("ABORT");
+        break;
+    case 3:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("Setup:");
+        tft.setTextSize(2);
+        tft.setCursor(40, 50);
+        tft.print("Product Temp set value");
+        tft.setCursor(400, 50);
+        tft.print(String(ParametersTemp.prodTempSetValue));
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(40, 275);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(20, 300);
+        tft.print(">ABORT");
+        break;
+    case 4:
+        menuItemSetupOp = 3;
+        break;
+    }
+}
+
+void displayFlushMenu()
+{
+    switch (flushtype)
+    {
+    case 0:
+        flushtype = 1;
+        break;
+    case 1:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("FLUSH MODE:");
         tft.setTextSize(3);
         tft.setCursor(20, 50);
-        if (passIndex == 1)
-        {
-            tft.setTextColor(ILI9486_BLUE);
-            tft.print("> " + String(tempPass1));
-            tft.setTextColor(ILI9486_BLACK);
-            tft.print(String(tempPass2) + String(tempPass3) + String(tempPass4));
-        }
-        else if (passIndex == 2)
-        {
-            tft.setTextColor(ILI9486_BLACK);
-            tft.print("> " + String(tempPass1));
-            tft.setTextColor(ILI9486_BLUE);
-            tft.print(String(tempPass2));
-            tft.setTextColor(ILI9486_BLACK);
-            tft.print(String(tempPass3) + String(tempPass4));
-        }
-        else if (passIndex == 3)
-        {
-            tft.setTextColor(ILI9486_BLACK);
-            tft.print("> " + String(tempPass1) + String(tempPass2));
-            tft.setTextColor(ILI9486_BLUE);
-            tft.print(String(tempPass3));
-            tft.setTextColor(ILI9486_BLACK);
-            tft.print(String(tempPass4));
-        }
-        else if (passIndex == 4)
-        {
-            tft.setTextColor(ILI9486_BLACK);
-            tft.print("> " + String(tempPass1) + String(tempPass2) + String(tempPass3));
-            tft.setTextColor(ILI9486_BLUE);
-            tft.print(String(tempPass4));
-        }
-        if (passIndex != 5)
-        {
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setCursor(40, 75);
-            tft.print("ABORT");
-        }
-        else if (passIndex == 5)
-        {
-            tft.setTextColor(ILI9486_BLACK);
-            tft.setCursor(40, 50);
-            tft.print(String(tempPass1) + String(tempPass2) + String(tempPass3) + String(tempPass4));
-            tft.setCursor(20, 75);
-            tft.setTextColor(ILI9486_BLUE);
-            tft.print("> ABORT");
-        }
+        tft.print(">Hot flush");
+        tft.setCursor(40, 80);
+        tft.print("Cold flush");
+        tft.setCursor(40, 140);
+        tft.print("Abort");
+        break;
+    case 2:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("FLUSH MODE:");
+        tft.setTextSize(3);
+        tft.setCursor(40, 50);
+        tft.print("Hot flush");
+        tft.setCursor(20, 80);
+        tft.print(">Cold flush");
+        tft.setCursor(40, 140);
+        tft.print("Abort");
+        break;
+    case 3:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("FLUSH MODE:");
+        tft.setTextSize(3);
+        tft.setCursor(40, 50);
+        tft.print("Hot flush");
+        tft.setCursor(40, 80);
+        tft.print("Cold flush");
+        tft.setCursor(20, 140);
+        tft.print(">Abort");
+        break;
+    case 4:
+        flushtype = 3;
+        break;
     }
+}
+
+void displayMainMenu()
+{
+    switch (menuItemMain)
+    {
+    case 0:
+        menuItemMain = 1;
+        break;
+    case 1:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("MENU:");
+        tft.setTextSize(3);
+        tft.setCursor(20, 50);
+        tft.print(">PROGRAM MODE");
+        tft.setCursor(40, 80);
+        tft.print("PRODUCT FLUSH MODE");
+        tft.setCursor(40, 110);
+        tft.print("MAINTENACE MODE");
+        tft.setCursor(40, 140);
+        tft.print("PRODUCT PRIME MODE");
+        tft.setCursor(40, 170);
+        tft.print("SYSTEM RESET");
+        break;
+    case 2:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("MENU:");
+        tft.setTextSize(3);
+        tft.setCursor(40, 50);
+        tft.print("PROGRAM MODE");
+        tft.setCursor(20, 80);
+        tft.print(">PRODUCT FLUSH MODE");
+        tft.setCursor(40, 110);
+        tft.print("MAINTENACE MODE");
+        tft.setCursor(40, 140);
+        tft.print("PRODUCT PRIME MODE");
+        tft.setCursor(40, 170);
+        tft.print("SYSTEM RESET");
+        break;
+    case 3:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("MENU:");
+        tft.setTextSize(3);
+        tft.setCursor(40, 50);
+        tft.print("PROGRAM MODE");
+        tft.setCursor(40, 80);
+        tft.print("PRODUCT FLUSH MODE");
+        tft.setCursor(20, 110);
+        tft.print(">MAINTENACE MODE");
+        tft.setCursor(40, 140);
+        tft.print("PRODUCT PRIME MODE");
+        tft.setCursor(40, 170);
+        tft.print("SYSTEM RESET");
+        break;
+    case 4:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("MENU:");
+        tft.setTextSize(3);
+        tft.setCursor(40, 50);
+        tft.print("PROGRAM MODE");
+        tft.setCursor(40, 80);
+        tft.print("PRODUCT FLUSH MODE");
+        tft.setCursor(40, 110);
+        tft.print("MAINTENACE MODE");
+        tft.setCursor(20, 140);
+        tft.print(">PRODUCT PRIME MODE");
+        tft.setCursor(40, 140);
+        tft.print("SYSTEM RESET");
+        break;
+    case 5:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("MENU:");
+        tft.setTextSize(3);
+        tft.setCursor(20, 50);
+        tft.print("PROGRAM MODE");
+        tft.setCursor(40, 80);
+        tft.print("PRODUCT FLUSH MODE");
+        tft.setCursor(40, 110);
+        tft.print("MAINTENACE MODE");
+        tft.setCursor(40, 140);
+        tft.print("PRODUCT PRIME MODE");
+        tft.setCursor(20, 170);
+        tft.print(">SYSTEM RESET");
+
+        break;
+
+    case 6:
+        menuItemMain = 5;
+        break;
+    }
+}
+
+void displayMenuSetupMan()
+{
+    switch (menuItemSetupMan)
+    {
+    case 0:
+        menuItemSetupMan = 1;
+        break;
+    case 1:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("MAINTENANCE MODE:");
+        tft.setTextSize(2);
+        tft.setTextColor(ILI9486_RED);
+        tft.setCursor(7, 50);
+        tft.print(">Product pump delay time");
+        tft.setCursor(415, 50);
+        tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setCursor(20, 75);
+        tft.print("24kW heater stop Temp below SP");
+        tft.setCursor(415, 75);
+        tft.print(String(ParametersTemp.heaterStop[0]) + "C");
+        tft.setCursor(20, 100);
+        tft.print("36kW heater stop Temp below SP");
+        tft.setCursor(415, 100);
+        tft.print(String(ParametersTemp.heaterStop[1]) + "C");
+        tft.setCursor(20, 125);
+        tft.print("Water over temp alarm value");
+        tft.setCursor(415, 125);
+        tft.print(String(ParametersTemp.waterOverTemp) + "C");
+
+        // no longer using analogRead
+
+        //tft.setCursor(20, 150);
+        //tft.print("Water low alarm value (1-10)");
+        //tft.setCursor(415, 150);
+        //tft.print(String(ParametersTemp.lowAlarm[1]));
+        //tft.setCursor(20, 175);
+        //tft.print("Product low alarm value (1-10)");
+        //tft.setCursor(415, 175);
+        //tft.print(String(ParametersTemp.lowAlarm[0]));
+        // addition of prod over temp set value
+
+        tft.setCursor(20, 150);
+        tft.print("Product OVER TEMP value");
+        tft.setCursor(415, 150);
+        tft.print(String(ParametersTemp.productOverTemp) + "C");
+
+        tft.setCursor(20, 175);
+        tft.print("Product Temp hysteresis time");
+        tft.setCursor(415, 175);
+        tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
+        tft.setCursor(20, 200);
+        tft.print("Product Temp band gap (WIDTH)");
+        tft.setCursor(415, 200);
+        tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
+        tft.setCursor(20, 225);
+        tft.print("Product Temp band gap (OFFSET)");
+        tft.setCursor(415, 225);
+        tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(20, 250);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(20, 300);
+        tft.print("ABORT");
+        break;
+    case 2:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("PROGRAM MODE:");
+        tft.setTextSize(2);
+        tft.setCursor(20, 50);
+        tft.print("Product pump delay time");
+        tft.setCursor(415, 50);
+        tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
+        tft.setTextColor(ILI9486_RED);
+        tft.setCursor(7, 75);
+        tft.print(">24kW heater stop Temp below SP");
+        tft.setCursor(415, 75);
+        tft.print(String(ParametersTemp.heaterStop[0]) + "C");
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setCursor(20, 100);
+        tft.print("36kW heater stop Temp below SP");
+        tft.setCursor(415, 100);
+        tft.print(String(ParametersTemp.heaterStop[1]) + "C");
+        tft.setCursor(20, 125);
+        tft.print("Water over temp alarm value");
+        tft.setCursor(415, 125);
+        tft.print(String(ParametersTemp.waterOverTemp) + "C");
+        tft.setCursor(20, 150);
+
+        tft.print("Product OVER TEMP value");
+        tft.setCursor(415, 150);
+        tft.print(String(ParametersTemp.productOverTemp) + "C");
+
+        tft.setCursor(20, 175);
+        tft.print("Product Temp hysteresis time");
+        tft.setCursor(415, 175);
+        tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
+        tft.setCursor(20, 200);
+        tft.print("Product Temp band gap (WIDTH)");
+        tft.setCursor(415, 200);
+        tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
+        tft.setCursor(20, 225);
+        tft.print("Product Temp band gap (OFFSET)");
+        tft.setCursor(415, 225);
+        tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(20, 250);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(20, 300);
+        tft.print("ABORT");
+        break;
+    case 3:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("PROGRAM MODE:");
+        tft.setTextSize(2);
+        tft.setCursor(20, 50);
+        tft.print("Product pump delay time");
+        tft.setCursor(415, 50);
+        tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
+        tft.setCursor(20, 75);
+        tft.print("24kW heater stop Temp below SP");
+        tft.setCursor(415, 75);
+        tft.print(String(ParametersTemp.heaterStop[0]) + "C");
+        tft.setTextColor(ILI9486_RED);
+        tft.setCursor(7, 100);
+        tft.print(">36kW heater stop Temp below SP");
+        tft.setCursor(415, 100);
+        tft.print(String(ParametersTemp.heaterStop[1]) + "C");
+        tft.setCursor(20, 125);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.print("Water over temp alarm value");
+        tft.setCursor(415, 125);
+        tft.print(String(ParametersTemp.waterOverTemp) + "C");
+        tft.setCursor(20, 150);
+        tft.print("Product OVER TEMP value");
+        tft.setCursor(415, 150);
+        tft.print(String(ParametersTemp.productOverTemp) + "C");
+
+        tft.setCursor(20, 175);
+        tft.print("Product Temp hysteresis time");
+        tft.setCursor(415, 175);
+        tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
+        tft.setCursor(20, 200);
+        tft.print("Product Temp band gap (WIDTH)");
+        tft.setCursor(415, 200);
+        tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
+        tft.setCursor(20, 225);
+        tft.print("Product Temp band gap (OFFSET)");
+        tft.setCursor(415, 225);
+        tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(20, 250);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(20, 300);
+        tft.print("ABORT");
+        break;
+    case 4:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("PROGRAM MODE:");
+        tft.setTextSize(2);
+        tft.setCursor(20, 50);
+        tft.print("Product pump delay time");
+        tft.setCursor(415, 50);
+        tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
+        tft.setCursor(20, 75);
+        tft.print("24kW heater stop Temp below SP");
+        tft.setCursor(415, 75);
+        tft.print(String(ParametersTemp.heaterStop[0]) + "C");
+        tft.setCursor(20, 100);
+        tft.print("36kW heater stop Temp below SP");
+        tft.setCursor(415, 100);
+        tft.print(String(ParametersTemp.heaterStop[1]) + "C");
+        tft.setTextColor(ILI9486_RED);
+        tft.setCursor(7, 125);
+        tft.print(">Water over heat alarm value");
+        tft.setCursor(415, 125);
+        tft.print(String(ParametersTemp.waterOverTemp) + "C");
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setCursor(20, 150);
+        tft.print("Product OVER TEMP value");
+        tft.setCursor(415, 150);
+        tft.print(String(ParametersTemp.productOverTemp) + "C");
+
+        tft.setCursor(20, 175);
+        tft.print("Product Temp hysteresis time");
+        tft.setCursor(415, 175);
+        tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
+        tft.setCursor(20, 200);
+        tft.print("Product Temp band gap (WIDTH)");
+        tft.setCursor(415, 200);
+        tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
+        tft.setCursor(20, 225);
+        tft.print("Product Temp band gap (OFFSET)");
+        tft.setCursor(415, 225);
+        tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(20, 250);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(20, 300);
+        tft.print("ABORT");
+        break;
+    case 5:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("PROGRAM MODE:");
+        tft.setTextSize(2);
+        tft.setCursor(20, 50);
+        tft.print("Product pump delay time");
+        tft.setCursor(415, 50);
+        tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
+        tft.setCursor(20, 75);
+        tft.print("24kW heater stop Temp below SP");
+        tft.setCursor(415, 75);
+        tft.print(String(ParametersTemp.heaterStop[0]) + "C");
+        tft.setCursor(20, 100);
+        tft.print("36kW heater stop Temp below SP");
+        tft.setCursor(415, 100);
+        tft.print(String(ParametersTemp.heaterStop[1]) + "C");
+        tft.setCursor(20, 125);
+        tft.print("Water over temp alarm value");
+        tft.setCursor(415, 125);
+        tft.print(String(ParametersTemp.waterOverTemp) + "C");
+        tft.setTextColor(ILI9486_RED);
+        tft.setCursor(7, 150);
+        tft.print(">Product OVER TEMP value");
+        tft.setCursor(415, 150);
+        tft.print(String(ParametersTemp.productOverTemp) + "C");
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setCursor(20, 175);
+        tft.print("Product Temp hysteresis time");
+        tft.setCursor(415, 175);
+        tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
+        tft.setCursor(20, 200);
+        tft.print("Product Temp band gap (WIDTH)");
+        tft.setCursor(415, 200);
+        tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
+        tft.setCursor(20, 225);
+        tft.print("Product Temp band gap (OFFSET)");
+        tft.setCursor(415, 225);
+        tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(20, 250);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(20, 300);
+        tft.print("ABORT");
+        break;
+    case 6:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("PROGRAM MODE:");
+        tft.setTextSize(2);
+        tft.setCursor(20, 50);
+        tft.print("Product pump delay time");
+        tft.setCursor(415, 50);
+        tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
+        tft.setCursor(20, 75);
+        tft.print("24kW heater stop Temp below SP");
+        tft.setCursor(415, 75);
+        tft.print(String(ParametersTemp.heaterStop[0]) + "C");
+        tft.setCursor(20, 100);
+        tft.print("36kW heater stop Temp below SP");
+        tft.setCursor(415, 100);
+        tft.print(String(ParametersTemp.heaterStop[1]) + "C");
+        tft.setCursor(20, 125);
+        tft.print("Water over temp alarm value");
+        tft.setCursor(415, 125);
+        tft.print(String(ParametersTemp.waterOverTemp) + "C");
+
+        tft.setCursor(20, 150);
+        tft.print("Product OVER TEMP value");
+        tft.setCursor(415, 150);
+        tft.print(String(ParametersTemp.productOverTemp) + "C");
+        tft.setTextColor(ILI9486_RED);
+        tft.setCursor(7, 175);
+        tft.print("Product Temp hysteresis time");
+        tft.setCursor(415, 175);
+        tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setCursor(20, 200);
+        tft.print("Product Temp band gap (WIDTH)");
+        tft.setCursor(415, 200);
+        tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
+        tft.setCursor(20, 225);
+        tft.print("Product Temp band gap (OFFSET)");
+        tft.setCursor(415, 225);
+        tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(20, 250);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(20, 300);
+        tft.print("ABORT");
+        break;
+    case 7:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("PROGRAM MODE:");
+        tft.setTextSize(2);
+        tft.setCursor(20, 50);
+        tft.print("Product pump delay time");
+        tft.setCursor(415, 50);
+        tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
+        tft.setCursor(20, 75);
+        tft.print("24kW heater stop Temp below SP");
+        tft.setCursor(415, 75);
+        tft.print(String(ParametersTemp.heaterStop[0]) + "C");
+        tft.setCursor(20, 100);
+        tft.print("36kW heater stop Temp below SP");
+        tft.setCursor(415, 100);
+        tft.print(String(ParametersTemp.heaterStop[1]) + "C");
+        tft.setCursor(20, 125);
+        tft.print("Water over temp alarm value");
+        tft.setCursor(415, 125);
+        tft.print(String(ParametersTemp.waterOverTemp) + "C");
+
+        tft.setCursor(20, 150);
+        tft.print("Product OVER TEMP value");
+        tft.setCursor(415, 150);
+        tft.print(String(ParametersTemp.productOverTemp) + "C");
+
+        tft.setCursor(20, 175);
+        tft.print("Product Temp hysteresis time");
+        tft.setCursor(415, 175);
+        tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
+        tft.setTextColor(ILI9486_RED);
+        tft.setCursor(7, 200);
+        tft.print(">Product Temp band gap (WIDTH)");
+        tft.setCursor(415, 200);
+        tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setCursor(20, 225);
+        tft.print("Product Temp band gap (OFFSET)");
+        tft.setCursor(415, 225);
+        tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(20, 250);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(20, 300);
+        tft.print("ABORT");
+        break;
+    case 8:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("PROGRAM MODE:");
+        tft.setTextSize(2);
+        tft.setCursor(20, 50);
+        tft.print("Product pump delay time");
+        tft.setCursor(415, 50);
+        tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
+        tft.setCursor(20, 75);
+        tft.print("24kW heater stop Temp below SP");
+        tft.setCursor(415, 75);
+        tft.print(String(ParametersTemp.heaterStop[0]) + "C");
+        tft.setCursor(20, 100);
+        tft.print("36kW heater stop Temp below SP");
+        tft.setCursor(415, 100);
+        tft.print(String(ParametersTemp.heaterStop[1]) + "C");
+        tft.setCursor(20, 125);
+        tft.print("Water over temp alarm value");
+        tft.setCursor(415, 125);
+        tft.print(String(ParametersTemp.waterOverTemp) + "C");
+
+        tft.setCursor(20, 150);
+        tft.print("Product OVER TEMP value");
+        tft.setCursor(415, 150);
+        tft.print(String(ParametersTemp.productOverTemp) + "C");
+
+        tft.setCursor(20, 175);
+        tft.print("Product Temp hysteresis time");
+        tft.setCursor(415, 175);
+        tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
+        tft.setCursor(20, 200);
+        tft.print("Product Temp band gap (WIDTH)");
+        tft.setCursor(415, 200);
+        tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
+        tft.setTextColor(ILI9486_RED);
+        tft.setCursor(20, 225);
+        tft.print(">Product Temp band gap (OFFSET)");
+        tft.setCursor(415, 225);
+        tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(20, 250);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(20, 300);
+        tft.print("ABORT");
+        break;
+    case 9:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("PROGRAM MODE:");
+        tft.setTextSize(2);
+        tft.setCursor(20, 50);
+        tft.print("Product pump delay time");
+        tft.setCursor(415, 50);
+        tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
+        tft.setCursor(20, 75);
+        tft.print("24kW heater stop Temp below SP");
+        tft.setCursor(415, 75);
+        tft.print(String(ParametersTemp.heaterStop[0]) + "C");
+        tft.setCursor(20, 100);
+        tft.print("36kW heater stop Temp below SP");
+        tft.setCursor(415, 100);
+        tft.print(String(ParametersTemp.heaterStop[1]) + "C");
+        tft.setCursor(20, 125);
+        tft.print("Water over temp alarm value");
+        tft.setCursor(415, 125);
+        tft.print(String(ParametersTemp.waterOverTemp) + "C");
+
+        tft.setCursor(20, 150);
+        tft.print("Product OVER TEMP value");
+        tft.setCursor(415, 150);
+        tft.print(String(ParametersTemp.productOverTemp) + "C");
+
+        tft.setCursor(20, 175);
+        tft.print("Product Temp hysteresis time");
+        tft.setCursor(415, 175);
+        tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
+        tft.setCursor(20, 200);
+        tft.print("Product Temp band gap (WIDTH)");
+        tft.setCursor(415, 200);
+        tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
+        tft.setCursor(20, 225);
+        tft.print("Product Temp band gap (OFFSET)");
+        tft.setCursor(415, 225);
+        tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
+        tft.setTextColor(ILI9486_RED);
+        tft.setCursor(7, 250);
+        tft.print(">DONE");
+        tft.setTextColor(ILI9486_GREEN);
+        tft.setCursor(20, 300);
+        tft.print("ABORT");
+        break;
+    case 10:
+        tft.setCursor(5, 5);
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setTextSize(5);
+        tft.print("PROGRAM MODE:");
+        tft.setTextSize(2);
+        tft.setCursor(20, 50);
+        tft.print("Product pump delay time");
+        tft.setCursor(415, 50);
+        tft.print(String(ParametersTemp.prodFlushPumpDelay) + "s");
+        tft.setCursor(20, 75);
+        tft.print("24kW heater stop Temp below SP");
+        tft.setCursor(415, 75);
+        tft.print(String(ParametersTemp.heaterStop[0]) + "C");
+        tft.setCursor(20, 100);
+        tft.print("36kW heater stop Temp below SP");
+        tft.setCursor(415, 100);
+        tft.print(String(ParametersTemp.heaterStop[1]) + "C");
+        tft.setCursor(20, 125);
+        tft.print("Water over temp alarm value");
+        tft.setCursor(415, 125);
+        tft.print(String(ParametersTemp.waterOverTemp) + "C");
+
+        tft.setCursor(20, 150);
+        tft.print("Product OVER TEMP value");
+        tft.setCursor(415, 150);
+        tft.print(String(ParametersTemp.productOverTemp) + "C");
+
+        tft.setCursor(20, 175);
+        tft.print("Product Temp hysteresis time");
+        tft.setCursor(415, 175);
+        tft.print(String(ParametersTemp.prodTempHysteresis) + "s");
+        tft.setCursor(20, 200);
+        tft.print("Product Temp band gap (WIDTH)");
+        tft.setCursor(415, 200);
+        tft.print(String(ParametersTemp.prodTempBandGap[0]) + "C");
+        tft.setCursor(20, 225);
+        tft.print("Product Temp band gap (OFFSET)");
+        tft.setCursor(415, 225);
+        tft.print(String(ParametersTemp.prodTempBandGap[1]) + "C");
+        tft.setTextColor(ILI9486_BLUE);
+        tft.setCursor(20, 250);
+        tft.print("DONE");
+        tft.setTextColor(ILI9486_RED);
+        tft.setCursor(7, 300);
+        tft.print(">ABORT");
+        break;
+    case 11:
+        menuItemSetupMan = 10;
+        break;
+    }
+}
+
+void userLogin()
+{
+    ApplicationMonitor.IAmAlive();
+    tft.setCursor(5, 5);
+    tft.setTextColor(ILI9486_BLACK);
+    tft.setTextSize(3);
+    tft.print("Enter your password");
+    tft.setTextSize(3);
+    tft.setCursor(20, 50);
+    if (passIndex == 1)
+    {
+        tft.setTextColor(ILI9486_BLUE);
+        tft.print("> " + String(tempPass1));
+        tft.setTextColor(ILI9486_BLACK);
+        tft.print(String(tempPass2) + String(tempPass3) + String(tempPass4));
+    }
+    else if (passIndex == 2)
+    {
+        tft.setTextColor(ILI9486_BLACK);
+        tft.print("> " + String(tempPass1));
+        tft.setTextColor(ILI9486_BLUE);
+        tft.print(String(tempPass2));
+        tft.setTextColor(ILI9486_BLACK);
+        tft.print(String(tempPass3) + String(tempPass4));
+    }
+    else if (passIndex == 3)
+    {
+        tft.setTextColor(ILI9486_BLACK);
+        tft.print("> " + String(tempPass1) + String(tempPass2));
+        tft.setTextColor(ILI9486_BLUE);
+        tft.print(String(tempPass3));
+        tft.setTextColor(ILI9486_BLACK);
+        tft.print(String(tempPass4));
+    }
+    else if (passIndex == 4)
+    {
+        tft.setTextColor(ILI9486_BLACK);
+        tft.print("> " + String(tempPass1) + String(tempPass2) + String(tempPass3));
+        tft.setTextColor(ILI9486_BLUE);
+        tft.print(String(tempPass4));
+    }
+    if (passIndex != 5)
+    {
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setCursor(40, 75);
+        tft.print("ABORT");
+    }
+    else if (passIndex == 5)
+    {
+        tft.setTextColor(ILI9486_BLACK);
+        tft.setCursor(40, 50);
+        tft.print(String(tempPass1) + String(tempPass2) + String(tempPass3) + String(tempPass4));
+        tft.setCursor(20, 75);
+        tft.setTextColor(ILI9486_BLUE);
+        tft.print("> ABORT");
+    }
+}
